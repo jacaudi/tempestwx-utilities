@@ -1,6 +1,7 @@
 # Project-specific
 .secrets
 chainguard-labels.*
+CLAUDE.md
 .worktrees/
 .private-journal/
 
