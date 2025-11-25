@@ -1,3 +1,4 @@
 .secrets
 chainguard-labels.*
 CLAUDE.md
+.worktrees/
