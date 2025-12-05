@@ -155,7 +155,65 @@ func (w *PostgresWriter) batchEvents() {
 
 // WriteReport implements MetricsWriter interface
 func (w *PostgresWriter) WriteReport(ctx context.Context, report tempestudp.Report) error {
-	// TODO: implement in next task
+	switch r := report.(type) {
+	case *tempestudp.TempestObservationReport:
+		return w.handleObservationReport(ctx, r)
+
+	// TODO: other report types in next tasks
+	default:
+		// Unknown report type - not an error
+		return nil
+	}
+}
+
+func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempestudp.TempestObservationReport) error {
+	for _, ob := range r.Obs {
+		if len(ob) < 13 {
+			continue
+		}
+
+		ts := time.Unix(int64(ob[0]), 0)
+
+		// Calculate wet bulb temperature (from tempestudp package)
+		wetBulb := tempestudp.WetBulbTemperatureC(ob[7], ob[8], ob[6])
+
+		row := observationRow{
+			serialNumber:  r.SerialNumber,
+			timestamp:     ts,
+			windLull:      ob[1],
+			windAvg:       ob[2],
+			windGust:      ob[3],
+			windDirection: ob[4],
+			pressure:      ob[6] * 100, // MB to Pascals
+			tempAir:       ob[7],
+			tempWetbulb:   wetBulb,
+			humidity:      ob[8],
+			illuminance:   ob[9],
+			uvIndex:       ob[10],
+			irradiance:    ob[11],
+			rainRate:      ob[12],
+		}
+
+		// Optional fields
+		if len(ob) >= 17 {
+			battery := ob[16]
+			row.battery = &battery
+		}
+		if len(ob) >= 18 {
+			interval := ob[17] * 60 // minutes to seconds
+			row.reportInterval = &interval
+		}
+
+		// Send to batch channel (non-blocking)
+		select {
+		case w.obsBatch <- row:
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			log.Printf("postgres: observation batch channel full, dropping")
+		}
+	}
+
 	return nil
 }
 

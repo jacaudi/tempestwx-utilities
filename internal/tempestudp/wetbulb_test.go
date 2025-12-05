@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func Test_wetBulbTemperatureC(t *testing.T) {
+func TestWetBulbTemperatureC(t *testing.T) {
 	type args struct {
 		temperatureC       float64
 		humidityPercent    float64
@@ -22,9 +22,9 @@ func Test_wetBulbTemperatureC(t *testing.T) {
 	}
 	for i, tt := range tests {
 		t.Run(fmt.Sprintf("test %d", i), func(t *testing.T) {
-			got := wetBulbTemperatureC(tt.args.temperatureC, tt.args.humidityPercent, tt.args.stationPressureHpa)
+			got := WetBulbTemperatureC(tt.args.temperatureC, tt.args.humidityPercent, tt.args.stationPressureHpa)
 			if math.Abs(got-tt.want) > 0.01 {
-				t.Errorf("wetBulbTemperatureC(%v, %v, %v) = %0.2f, want %v", tt.args.temperatureC, tt.args.humidityPercent, tt.args.stationPressureHpa, got, tt.want)
+				t.Errorf("WetBulbTemperatureC(%v, %v, %v) = %0.2f, want %v", tt.args.temperatureC, tt.args.humidityPercent, tt.args.stationPressureHpa, got, tt.want)
 			}
 		})
 	}
