@@ -132,10 +132,53 @@ func NewPostgresWriter(ctx context.Context, databaseURL string) (*PostgresWriter
 	return w, nil
 }
 
-// Placeholder batch methods - will implement in next tasks
+// batchObservations handles observation rows with immediate flush (1 row batches)
 func (w *PostgresWriter) batchObservations() {
 	defer w.wg.Done()
-	// TODO: implement
+
+	for {
+		select {
+		case row, ok := <-w.obsBatch:
+			if !ok {
+				return // Channel closed
+			}
+			// Immediate flush for observations
+			w.flushObservations([]observationRow{row})
+
+		case <-w.ctx.Done():
+			return
+		}
+	}
+}
+
+func (w *PostgresWriter) flushObservations(batch []observationRow) {
+	w.flushWithRetry(func() error {
+		return w.insertObservations(batch)
+	}, "tempest_observations", len(batch))
+}
+
+func (w *PostgresWriter) insertObservations(batch []observationRow) error {
+	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+	defer cancel()
+
+	for _, row := range batch {
+		_, err := w.pool.Exec(ctx, `
+			INSERT INTO tempest_observations (
+				serial_number, timestamp, wind_lull, wind_avg, wind_gust,
+				wind_direction, pressure, temp_air, temp_wetbulb, humidity,
+				illuminance, uv_index, irradiance, rain_rate, battery, report_interval
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			ON CONFLICT (serial_number, timestamp) DO NOTHING
+		`, row.serialNumber, row.timestamp, row.windLull, row.windAvg, row.windGust,
+			row.windDirection, row.pressure, row.tempAir, row.tempWetbulb, row.humidity,
+			row.illuminance, row.uvIndex, row.irradiance, row.rainRate, row.battery, row.reportInterval)
+
+		if err != nil {
+			return fmt.Errorf("insert observation: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (w *PostgresWriter) batchRapidWind() {
@@ -227,6 +270,77 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 func (w *PostgresWriter) Flush(ctx context.Context) error {
 	// TODO: implement
 	return nil
+}
+
+// flushWithRetry implements exponential backoff retry logic
+func (w *PostgresWriter) flushWithRetry(flushFn func() error, tableName string, batchSize int) {
+	backoff := time.Second
+	maxBackoff := 30 * time.Second
+
+	for attempt := 1; attempt <= w.maxRetries; attempt++ {
+		err := flushFn()
+		if err == nil {
+			return // Success
+		}
+
+		log.Printf("postgres: failed to write %d rows to %s (attempt %d/%d): %v",
+			batchSize, tableName, attempt, w.maxRetries, err)
+
+		if !isRetryable(err) {
+			log.Printf("postgres: non-retryable error for %s, dropping batch: %v",
+				tableName, err)
+			return
+		}
+
+		if attempt == w.maxRetries {
+			log.Printf("postgres: max retries exceeded for %s, dropping %d rows", tableName, batchSize)
+			return
+		}
+
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	// Retryable: connection, timeout, deadlock
+	if contains(errStr, "connection") ||
+		contains(errStr, "timeout") ||
+		contains(errStr, "deadlock") {
+		return true
+	}
+
+	// Not retryable: constraint violations, schema errors
+	if contains(errStr, "duplicate key") ||
+		contains(errStr, "does not exist") ||
+		contains(errStr, "constraint") {
+		return false
+	}
+
+	return true
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) &&
+		(s == substr || len(s) > len(substr) && containsSlow(s, substr))
+}
+
+func containsSlow(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // Close implements MetricsWriter interface

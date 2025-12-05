@@ -35,6 +35,15 @@ func TestPostgresWriter_WriteReport_Observation(t *testing.T) {
 	t.Skip("TODO: implement with real Postgres")
 }
 
+func TestPostgresWriter_FlushObservations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	// TODO: implement with testcontainers
+	t.Skip("TODO: implement with real Postgres")
+}
+
 // Unit test for routing logic
 func TestPostgresWriter_RouteObservation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
