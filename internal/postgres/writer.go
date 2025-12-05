@@ -199,7 +199,71 @@ func (w *PostgresWriter) insertObservations(batch []observationRow) error {
 
 func (w *PostgresWriter) batchRapidWind() {
 	defer w.wg.Done()
-	// TODO: implement
+
+	batch := make([]rapidWindRow, 0, w.batchSize)
+	ticker := time.NewTicker(w.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case row, ok := <-w.windBatch:
+			if !ok {
+				// Channel closed - flush remaining
+				if len(batch) > 0 {
+					w.flushRapidWind(batch)
+				}
+				return
+			}
+
+			batch = append(batch, row)
+
+			// Flush when batch is full
+			if len(batch) >= w.batchSize {
+				w.flushRapidWind(batch)
+				batch = batch[:0]
+			}
+
+		case <-ticker.C:
+			// Periodic flush
+			if len(batch) > 0 {
+				w.flushRapidWind(batch)
+				batch = batch[:0]
+			}
+
+		case <-w.ctx.Done():
+			// Shutdown - flush remaining
+			if len(batch) > 0 {
+				w.flushRapidWind(batch)
+			}
+			return
+		}
+	}
+}
+
+func (w *PostgresWriter) flushRapidWind(batch []rapidWindRow) {
+	w.flushWithRetry(func() error {
+		return w.insertRapidWind(batch)
+	}, "tempest_rapid_wind", len(batch))
+}
+
+func (w *PostgresWriter) insertRapidWind(batch []rapidWindRow) error {
+	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+	defer cancel()
+
+	for _, row := range batch {
+		_, err := w.pool.Exec(ctx, `
+			INSERT INTO tempest_rapid_wind (
+				serial_number, timestamp, wind_speed, wind_direction
+			) VALUES ($1, $2, $3, $4)
+			ON CONFLICT (serial_number, timestamp) DO NOTHING
+		`, row.serialNumber, row.timestamp, row.windSpeed, row.windDirection)
+
+		if err != nil {
+			return fmt.Errorf("insert rapid_wind: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (w *PostgresWriter) batchHubStatus() {
@@ -218,7 +282,10 @@ func (w *PostgresWriter) WriteReport(ctx context.Context, report tempestudp.Repo
 	case *tempestudp.TempestObservationReport:
 		return w.handleObservationReport(ctx, r)
 
-	// TODO: other report types in next tasks
+	// Note: rapidWindReport is not exported from tempestudp package
+	// Rapid wind data will be handled via WriteMetrics path
+	// TODO: other report types (hub_status, events) in next tasks
+
 	default:
 		// Unknown report type - not an error
 		return nil
