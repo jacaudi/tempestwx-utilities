@@ -3,6 +3,7 @@ package prometheus
 import (
 	"context"
 	"log"
+	"sync"
 
 	"tempestwx-exporter/internal/tempestudp"
 
@@ -16,15 +17,13 @@ type PrometheusWriter struct {
 	pusher *push.Pusher
 	outbox chan prometheus.Metric
 	more   chan bool
-	ctx    context.Context
+	wg     sync.WaitGroup
 }
 
 // NewPrometheusWriter creates a new Prometheus writer.
 func NewPrometheusWriter(pushURL, jobName string) *PrometheusWriter {
 	outbox := make(chan prometheus.Metric, 1000)
 	more := make(chan bool, 1)
-
-	ctx := context.Background()
 
 	// Create collector that drains outbox
 	collector := &outboxCollector{outbox: outbox}
@@ -38,10 +37,10 @@ func NewPrometheusWriter(pushURL, jobName string) *PrometheusWriter {
 		pusher: pusher,
 		outbox: outbox,
 		more:   more,
-		ctx:    ctx,
 	}
 
 	// Start background push worker
+	w.wg.Add(1)
 	go w.pushWorker()
 
 	log.Printf("prometheus: configured push to %q with job %q", pushURL, jobName)
@@ -91,11 +90,13 @@ func (w *PrometheusWriter) Flush(ctx context.Context) error {
 func (w *PrometheusWriter) Close() error {
 	close(w.outbox)
 	close(w.more)
+	w.wg.Wait() // Wait for pushWorker to finish
 	log.Printf("prometheus: closed")
 	return nil
 }
 
 func (w *PrometheusWriter) pushWorker() {
+	defer w.wg.Done()
 	for range w.more {
 		if err := w.pusher.Add(); err != nil {
 			log.Printf("prometheus: push error: %v", err)
