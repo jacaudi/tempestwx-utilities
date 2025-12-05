@@ -16,64 +16,38 @@ import (
 	"tempestwx-exporter/internal/prometheus"
 	"tempestwx-exporter/internal/postgres"
 	"tempestwx-exporter/internal/sink"
-	"tempestwx-exporter/internal/tempest"
 	"tempestwx-exporter/internal/tempestapi"
 	"tempestwx-exporter/internal/tempestudp"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/push"
 	"github.com/prometheus/common/expfmt"
 )
 
-type collector struct {
-	outbox <-chan promclient.Metric
-}
-
-func (c collector) Describe(descs chan<- *promclient.Desc) {
-	for _, desc := range tempest.All {
-		descs <- desc
-	}
-}
-
-func (c collector) Collect(metrics chan<- promclient.Metric) {
-	for {
-		select {
-		case m := <-c.outbox:
-			metrics <- m
-		default:
-			return
-		}
-	}
-}
+// Old collector implementation removed - now using MetricsSink
 
 func main() {
 	ctx, done := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer done()
 
-	// Check operational mode
-	token := os.Getenv("TOKEN")
-	if token != "" {
-		// API export mode - keep existing implementation for now
-		export(ctx, token)
-		return
-	}
-
-	// UDP listener mode with sink
+	// Initialize sink for both modes
 	metricsSink := sink.NewMetricsSink(ctx)
 	defer metricsSink.Close()
 
-	// Configure Prometheus writer
-	pushURL := os.Getenv("PUSH_URL")
-	if pushURL != "" {
-		jobName := os.Getenv("JOB_NAME")
-		if jobName == "" {
-			jobName = "tempest"
+	// Configure Prometheus writer (UDP mode only)
+	token := os.Getenv("TOKEN")
+	if token == "" {
+		pushURL := os.Getenv("PUSH_URL")
+		if pushURL != "" {
+			jobName := os.Getenv("JOB_NAME")
+			if jobName == "" {
+				jobName = "tempest"
+			}
+			promWriter := prometheus.NewPrometheusWriter(pushURL, jobName)
+			metricsSink.AddWriter(promWriter)
 		}
-		promWriter := prometheus.NewPrometheusWriter(pushURL, jobName)
-		metricsSink.AddWriter(promWriter)
 	}
 
-	// Configure Postgres writer
+	// Configure Postgres writer (both modes)
 	dbConfig, err := config.GetDatabaseConfig()
 	if err != nil {
 		log.Fatalf("database configuration error: %v", err)
@@ -91,8 +65,12 @@ func main() {
 		log.Fatal("no writers configured - set PUSH_URL and/or DATABASE_HOST/DATABASE_URL")
 	}
 
-	// Start UDP listener
-	listenAndPushWithSink(ctx, metricsSink)
+	// Choose operational mode
+	if token != "" {
+		exportWithSink(ctx, token, metricsSink)
+	} else {
+		listenAndPushWithSink(ctx, metricsSink)
+	}
 }
 
 func listenAndPushWithSink(ctx context.Context, metricsSink *sink.MetricsSink) {
@@ -121,61 +99,7 @@ func listenAndPushWithSink(ctx context.Context, metricsSink *sink.MetricsSink) {
 	}
 }
 
-func listenAndPush(ctx context.Context) {
-	pushUrl := os.Getenv("PUSH_URL")
-	if pushUrl == "" {
-		log.Fatal("PUSH_URL must be specified")
-	}
-	jobName := os.Getenv("JOB_NAME")
-	if jobName == "" {
-		jobName = "tempest"
-	}
-	logUDP, _ := strconv.ParseBool(os.Getenv("LOG_UDP"))
-	log.Printf("pushing to %q with job name %q", pushUrl, jobName)
-
-	more := make(chan bool, 1)
-	outbox := make(chan promclient.Metric, 1000)
-	go func() {
-		c := &collector{outbox}
-		pusher := push.New(pushUrl, jobName).Collector(c).Format(expfmt.FmtText)
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-more:
-				if err := pusher.Add(); err != nil {
-					log.Printf("error pushing: %v", err)
-				}
-			}
-		}
-	}()
-
-	if err := listen(ctx, func(b []byte, addr *net.UDPAddr) error {
-		if logUDP {
-			log.Printf("UDP in: %s", string(b))
-		}
-		report, err := tempestudp.ParseReport(b)
-		if err != nil {
-			log.Printf("error parsing report from %s: %s", addr, err)
-		} else {
-			for _, m := range report.Metrics() {
-				outbox <- m
-			}
-
-			select {
-			case more <- true:
-				// success
-			default:
-				// already busy sending
-			}
-		}
-
-		return nil
-	}); err != nil {
-		log.Fatal(err)
-	}
-}
+// Old listenAndPush implementation removed - now using listenAndPushWithSink
 
 func listen(ctx context.Context, rx func([]byte, *net.UDPAddr) error) error {
 	sock, err := net.ListenUDP("udp", &net.UDPAddr{
@@ -218,7 +142,7 @@ func listen(ctx context.Context, rx func([]byte, *net.UDPAddr) error) error {
 	}
 }
 
-func export(ctx context.Context, token string) {
+func exportWithSink(ctx context.Context, token string, metricsSink *sink.MetricsSink) {
 	client := tempestapi.NewClient(token)
 	stations, err := client.ListStations(ctx)
 	if err != nil {
@@ -238,76 +162,98 @@ func export(ctx context.Context, token string) {
 		}
 	}
 
-	n := 1
+	keepFiles, _ := strconv.ParseBool(os.Getenv("KEEP_EXPORT_FILES"))
+	fileNum := 1
 
 	var next time.Time
 	cur := startAt
 	for {
-		var c dumpCollector
+		var metrics []promclient.Metric
 
-		for ; cur.Before(time.Now()) && len(c.metrics) < 200_000; cur = next {
-			next = cur.AddDate(0, 0, 1) // for 1-minute observation frequency
+		for ; cur.Before(time.Now()) && len(metrics) < 200_000; cur = next {
+			next = cur.AddDate(0, 0, 1)
 
 			for _, station := range stations {
 				log.Printf("fetching %s starting %s", station.Name, cur.Format(time.RFC3339))
-				metrics, err := client.GetObservations(ctx, station, cur, next)
+				stationMetrics, err := client.GetObservations(ctx, station, cur, next)
 				if err != nil {
 					log.Fatalf("error fetching %#v for %d-%d: %v", station, cur.Unix(), next.Unix(), err)
 				}
-				c.metrics = append(c.metrics, metrics...)
+				metrics = append(metrics, stationMetrics...)
 			}
 		}
 
-		if len(c.metrics) == 0 {
+		if len(metrics) == 0 {
 			break
 		}
 
-		r := promclient.NewRegistry()
-		r.MustRegister(&c)
-		families, err := r.Gather()
-		if err != nil {
-			log.Fatalf("error gathering metrics: %v", err)
+		// Send to sink (Postgres)
+		log.Printf("sending %d metrics to sink", len(metrics))
+		if err := metricsSink.SendMetrics(ctx, metrics); err != nil {
+			log.Printf("error sending metrics: %v", err)
 		}
 
-		filename := fmt.Sprintf("tempest_%03d.txt.gz", n)
-		log.Printf("writing %s", filename)
-		f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Fatalf("error opening output file: %v", err)
-		}
-		gzw := gzip.NewWriter(f)
-		enc := expfmt.NewEncoder(gzw, expfmt.FmtText)
-		for _, family := range families {
-			if err := enc.Encode(family); err != nil {
-				log.Fatalf("error encoding metrics: %v", err)
+		// Optionally write to .gz files
+		if keepFiles {
+			filename := fmt.Sprintf("tempest_%03d.txt.gz", fileNum)
+			if err := writeMetricsToFile(ctx, filename, metrics); err != nil {
+				log.Fatalf("error writing file: %v", err)
 			}
+			fileNum++
 		}
-		if c, ok := enc.(io.Closer); ok {
-			err = c.Close()
-			if err != nil {
-				log.Fatalf("error closing metric encoder: %v", err)
-			}
-		}
-		if err := gzw.Close(); err != nil {
-			log.Fatalf("error closing gzip writer: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			log.Fatalf("error closing output file: %v", err)
-		}
-
-		n = n + 1
 	}
+
+	log.Printf("export complete")
 }
 
-type dumpCollector struct {
+func writeMetricsToFile(ctx context.Context, filename string, metrics []promclient.Metric) error {
+	// Create collector for metrics
+	collector := &staticCollector{metrics: metrics}
+
+	r := promclient.NewRegistry()
+	r.MustRegister(collector)
+	families, err := r.Gather()
+	if err != nil {
+		return fmt.Errorf("gather metrics: %w", err)
+	}
+
+	log.Printf("writing %s", filename)
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open file: %w", err)
+	}
+	defer f.Close()
+
+	gzw := gzip.NewWriter(f)
+	defer gzw.Close()
+
+	enc := expfmt.NewEncoder(gzw, expfmt.FmtText)
+	for _, family := range families {
+		if err := enc.Encode(family); err != nil {
+			return fmt.Errorf("encode metrics: %w", err)
+		}
+	}
+
+	if c, ok := enc.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			return fmt.Errorf("close encoder: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// staticCollector holds a static list of metrics
+type staticCollector struct {
 	metrics []promclient.Metric
 }
 
-func (d dumpCollector) Describe(descs chan<- *promclient.Desc) {
+func (c *staticCollector) Describe(descs chan<- *promclient.Desc) {
+	// Not needed
 }
 
-func (d dumpCollector) Collect(metrics chan<- promclient.Metric) {
-	for _, metric := range d.metrics {
-		metrics <- metric
+func (c *staticCollector) Collect(metrics chan<- promclient.Metric) {
+	for _, m := range c.metrics {
+		metrics <- m
 	}
 }
