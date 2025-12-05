@@ -280,12 +280,134 @@ func (w *PostgresWriter) insertRapidWind(batch []rapidWindRow) error {
 
 func (w *PostgresWriter) batchHubStatus() {
 	defer w.wg.Done()
-	// TODO: implement
+
+	batch := make([]hubStatusRow, 0, w.batchSize)
+	ticker := time.NewTicker(w.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case row, ok := <-w.hubBatch:
+			if !ok {
+				if len(batch) > 0 {
+					w.flushHubStatus(batch)
+				}
+				return
+			}
+
+			batch = append(batch, row)
+			if len(batch) >= w.batchSize {
+				w.flushHubStatus(batch)
+				batch = batch[:0]
+			}
+
+		case <-ticker.C:
+			if len(batch) > 0 {
+				w.flushHubStatus(batch)
+				batch = batch[:0]
+			}
+
+		case <-w.ctx.Done():
+			if len(batch) > 0 {
+				w.flushHubStatus(batch)
+			}
+			return
+		}
+	}
+}
+
+func (w *PostgresWriter) flushHubStatus(batch []hubStatusRow) {
+	w.flushWithRetry(func() error {
+		return w.insertHubStatus(batch)
+	}, "tempest_hub_status", len(batch))
+}
+
+func (w *PostgresWriter) insertHubStatus(batch []hubStatusRow) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+	defer cancel()
+
+	b := &pgx.Batch{}
+
+	for _, row := range batch {
+		b.Queue(`
+			INSERT INTO tempest_hub_status (
+				serial_number, timestamp, uptime, rssi, reboot_count, bus_errors
+			) VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (serial_number, timestamp) DO NOTHING
+		`, row.serialNumber, row.timestamp, row.uptime, row.rssi, row.rebootCount, row.busErrors)
+	}
+
+	br := w.pool.SendBatch(ctx, b)
+	defer br.Close()
+
+	for i := 0; i < len(batch); i++ {
+		_, err := br.Exec()
+		if err != nil {
+			return fmt.Errorf("insert hub_status %d: %w", i, err)
+		}
+	}
+
+	return nil
 }
 
 func (w *PostgresWriter) batchEvents() {
 	defer w.wg.Done()
-	// TODO: implement
+
+	for {
+		select {
+		case row, ok := <-w.eventBatch:
+			if !ok {
+				return
+			}
+			// Immediate flush for events (critical)
+			w.flushEvents([]eventRow{row})
+
+		case <-w.ctx.Done():
+			return
+		}
+	}
+}
+
+func (w *PostgresWriter) flushEvents(batch []eventRow) {
+	w.flushWithRetry(func() error {
+		return w.insertEvents(batch)
+	}, "tempest_events", len(batch))
+}
+
+func (w *PostgresWriter) insertEvents(batch []eventRow) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+	defer cancel()
+
+	b := &pgx.Batch{}
+
+	for _, row := range batch {
+		b.Queue(`
+			INSERT INTO tempest_events (
+				serial_number, timestamp, event_type, distance_km, energy
+			) VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (serial_number, timestamp, event_type) DO NOTHING
+		`, row.serialNumber, row.timestamp, row.eventType, row.distanceKm, row.energy)
+	}
+
+	br := w.pool.SendBatch(ctx, b)
+	defer br.Close()
+
+	for i := 0; i < len(batch); i++ {
+		_, err := br.Exec()
+		if err != nil {
+			return fmt.Errorf("insert event %d: %w", i, err)
+		}
+	}
+
+	return nil
 }
 
 // WriteReport implements MetricsWriter interface
@@ -363,7 +485,8 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 
 // Flush implements MetricsWriter interface
 func (w *PostgresWriter) Flush(ctx context.Context) error {
-	// TODO: implement
+	// Flush is handled by the batch workers
+	// When Close() is called, channels are closed and workers flush remaining data
 	return nil
 }
 
