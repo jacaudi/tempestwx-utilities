@@ -2,13 +2,17 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"tempestwx-exporter/internal/tempestudp"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -158,11 +162,17 @@ func (w *PostgresWriter) flushObservations(batch []observationRow) {
 }
 
 func (w *PostgresWriter) insertObservations(batch []observationRow) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
 	defer cancel()
 
+	b := &pgx.Batch{}
+
 	for _, row := range batch {
-		_, err := w.pool.Exec(ctx, `
+		b.Queue(`
 			INSERT INTO tempest_observations (
 				serial_number, timestamp, wind_lull, wind_avg, wind_gust,
 				wind_direction, pressure, temp_air, temp_wetbulb, humidity,
@@ -172,9 +182,15 @@ func (w *PostgresWriter) insertObservations(batch []observationRow) error {
 		`, row.serialNumber, row.timestamp, row.windLull, row.windAvg, row.windGust,
 			row.windDirection, row.pressure, row.tempAir, row.tempWetbulb, row.humidity,
 			row.illuminance, row.uvIndex, row.irradiance, row.rainRate, row.battery, row.reportInterval)
+	}
 
+	br := w.pool.SendBatch(ctx, b)
+	defer br.Close()
+
+	for i := 0; i < len(batch); i++ {
+		_, err := br.Exec()
 		if err != nil {
-			return fmt.Errorf("insert observation: %w", err)
+			return fmt.Errorf("insert observation %d: %w", i, err)
 		}
 	}
 
@@ -280,7 +296,7 @@ func (w *PostgresWriter) flushWithRetry(flushFn func() error, tableName string, 
 	for attempt := 1; attempt <= w.maxRetries; attempt++ {
 		err := flushFn()
 		if err == nil {
-			return // Success
+			return
 		}
 
 		log.Printf("postgres: failed to write %d rows to %s (attempt %d/%d): %v",
@@ -297,7 +313,15 @@ func (w *PostgresWriter) flushWithRetry(flushFn func() error, tableName string, 
 			return
 		}
 
-		time.Sleep(backoff)
+		// Check if context is still valid before sleeping
+		select {
+		case <-w.ctx.Done():
+			log.Printf("postgres: context cancelled during retry for %s, dropping batch", tableName)
+			return
+		case <-time.After(backoff):
+			// Continue to next attempt
+		}
+
 		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
@@ -310,37 +334,41 @@ func isRetryable(err error) bool {
 		return false
 	}
 
-	errStr := err.Error()
-
-	// Retryable: connection, timeout, deadlock
-	if contains(errStr, "connection") ||
-		contains(errStr, "timeout") ||
-		contains(errStr, "deadlock") {
-		return true
-	}
-
-	// Not retryable: constraint violations, schema errors
-	if contains(errStr, "duplicate key") ||
-		contains(errStr, "does not exist") ||
-		contains(errStr, "constraint") {
+	// Check for context errors (not retryable - parent cancelled)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
-	return true
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) &&
-		(s == substr || len(s) > len(substr) && containsSlow(s, substr))
-}
-
-func containsSlow(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
+	// Check for pgconn errors
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		// Retryable: connection failures (Class 08)
+		case "08000", "08003", "08006":
+			return true
+		// Retryable: deadlock (Class 40)
+		case "40001", "40P01":
+			return true
+		// Not retryable: constraint violations (Class 23)
+		case "23505", "23503", "23502":
+			return false
+		// Not retryable: undefined objects (Class 42)
+		case "42P01", "42703":
+			return false
+		default:
 			return true
 		}
 	}
-	return false
+
+	// Network errors
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "network is unreachable") {
+		return true
+	}
+
+	return true
 }
 
 // Close implements MetricsWriter interface
