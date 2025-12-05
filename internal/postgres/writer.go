@@ -247,19 +247,31 @@ func (w *PostgresWriter) flushRapidWind(batch []rapidWindRow) {
 }
 
 func (w *PostgresWriter) insertRapidWind(batch []rapidWindRow) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
 	defer cancel()
 
+	b := &pgx.Batch{}
+
 	for _, row := range batch {
-		_, err := w.pool.Exec(ctx, `
+		b.Queue(`
 			INSERT INTO tempest_rapid_wind (
 				serial_number, timestamp, wind_speed, wind_direction
 			) VALUES ($1, $2, $3, $4)
 			ON CONFLICT (serial_number, timestamp) DO NOTHING
 		`, row.serialNumber, row.timestamp, row.windSpeed, row.windDirection)
+	}
 
+	br := w.pool.SendBatch(ctx, b)
+	defer br.Close()
+
+	for i := 0; i < len(batch); i++ {
+		_, err := br.Exec()
 		if err != nil {
-			return fmt.Errorf("insert rapid_wind: %w", err)
+			return fmt.Errorf("insert rapid_wind %d: %w", i, err)
 		}
 	}
 
