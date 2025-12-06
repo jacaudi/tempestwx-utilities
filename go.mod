@@ -2,7 +2,7 @@ module tempestwx-utilities
 
 go 1.24.0
 
-toolchain go1.24.9
+toolchain go1.25.5
 
 require (
 	github.com/jackc/pgx/v5 v5.7.6
