@@ -11,6 +11,7 @@ import (
 
 	"tempestwx-utilities/internal/tempestudp"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,27 +21,31 @@ import (
 
 // Row types for each table
 type observationRow struct {
-	serialNumber        string
-	timestamp           time.Time
-	windLull            float64
-	windAvg             float64
-	windGust            float64
-	windDirection       float64
-	pressure            float64
-	tempAir             float64
-	tempWetbulb         float64
-	humidity            float64
-	illuminance         float64
-	uvIndex             float64
-	irradiance          float64
-	rainRate            float64
-	lightningDistance   *float64
+	id                   uuid.UUID
+	serialNumber         string
+	timestamp            time.Time
+	windLull             float64
+	windAvg              float64
+	windGust             float64
+	windDirection        float64
+	windSampleInterval   *float64
+	pressure             float64
+	tempAir              float64
+	tempWetbulb          float64
+	humidity             float64
+	illuminance          float64
+	uvIndex              float64
+	irradiance           float64
+	rainRate             float64
+	precipType           *int
+	lightningDistance    *float64
 	lightningStrikeCount *float64
-	battery             *float64
-	reportInterval      *float64
+	battery              *float64
+	reportInterval       *float64
 }
 
 type rapidWindRow struct {
+	id            uuid.UUID
 	serialNumber  string
 	timestamp     time.Time
 	windSpeed     float64
@@ -48,6 +53,7 @@ type rapidWindRow struct {
 }
 
 type hubStatusRow struct {
+	id           uuid.UUID
 	serialNumber string
 	timestamp    time.Time
 	uptime       float64
@@ -57,6 +63,7 @@ type hubStatusRow struct {
 }
 
 type eventRow struct {
+	id           uuid.UUID
 	serialNumber string
 	timestamp    time.Time
 	eventType    string
