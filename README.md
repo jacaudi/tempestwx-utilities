@@ -32,6 +32,17 @@ Minimal, via environment variables:
 
 * `JOB_NAME`: the value for the `job` label, defaulting to `"tempest"`
 
+### PostgreSQL Storage (Optional)
+
+The exporter can optionally write metrics to PostgreSQL in addition to (or instead of) Prometheus. Configure using either:
+
+* `DATABASE_URL`: Full PostgreSQL connection string (e.g., `postgresql://user:pass@host:5432/dbname`)
+* Or individual components: `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`, `DATABASE_NAME`
+
+When configured, the exporter automatically creates and maintains typed tables for observations, rapid wind data, hub status, and events.
+
+See `CLAUDE.md` for detailed configuration options and Docker Compose examples
+
 ## Source Credit
 
 - [tempest-exporter](https://github.com/willglynn/tempest_exporter) - Started as a fork of this project.
