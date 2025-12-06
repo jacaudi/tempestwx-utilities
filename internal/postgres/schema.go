@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tempest_observations (
     wind_avg      DOUBLE PRECISION,
     wind_gust     DOUBLE PRECISION,
     wind_direction DOUBLE PRECISION,
+    wind_sample_interval DOUBLE PRECISION,
 
     pressure      DOUBLE PRECISION,
     temp_air      DOUBLE PRECISION,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS tempest_observations (
     irradiance    DOUBLE PRECISION,
 
     rain_rate     DOUBLE PRECISION,
+    precip_type   INTEGER,
 
     lightning_distance DOUBLE PRECISION,
     lightning_strike_count DOUBLE PRECISION,
