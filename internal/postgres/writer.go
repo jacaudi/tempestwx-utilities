@@ -530,6 +530,7 @@ func (w *PostgresWriter) handleRapidWindReport(ctx context.Context, r *tempestud
 	ts := time.Unix(int64(r.Ob[0]), 0)
 
 	row := rapidWindRow{
+		id:            uuid.Must(uuid.NewV7()), // Generate UUIDv7
 		serialNumber:  r.SerialNumber,
 		timestamp:     ts,
 		windSpeed:     r.Ob[1],
@@ -556,6 +557,7 @@ func (w *PostgresWriter) handleHubStatusReport(ctx context.Context, r *tempestud
 	ts := time.Unix(r.Timestamp, 0)
 
 	row := hubStatusRow{
+		id:           uuid.Must(uuid.NewV7()), // Generate UUIDv7
 		serialNumber: r.SerialNumber,
 		timestamp:    ts,
 		uptime:       r.Uptime,
@@ -584,6 +586,7 @@ func (w *PostgresWriter) handleRainStartReport(ctx context.Context, r *tempestud
 	ts := time.Unix(int64(r.Evt[0]), 0)
 
 	row := eventRow{
+		id:           uuid.Must(uuid.NewV7()), // Generate UUIDv7
 		serialNumber: r.SerialNumber,
 		timestamp:    ts,
 		eventType:    "rain_start",
@@ -613,6 +616,7 @@ func (w *PostgresWriter) handleLightningStrikeReport(ctx context.Context, r *tem
 	energy := r.Evt[2]
 
 	row := eventRow{
+		id:           uuid.Must(uuid.NewV7()), // Generate UUIDv7
 		serialNumber: r.SerialNumber,
 		timestamp:    ts,
 		eventType:    "lightning_strike",
