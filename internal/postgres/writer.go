@@ -15,26 +15,29 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
 // Row types for each table
 type observationRow struct {
-	serialNumber   string
-	timestamp      time.Time
-	windLull       float64
-	windAvg        float64
-	windGust       float64
-	windDirection  float64
-	pressure       float64
-	tempAir        float64
-	tempWetbulb    float64
-	humidity       float64
-	illuminance    float64
-	uvIndex        float64
-	irradiance     float64
-	rainRate       float64
-	battery        *float64
-	reportInterval *float64
+	serialNumber        string
+	timestamp           time.Time
+	windLull            float64
+	windAvg             float64
+	windGust            float64
+	windDirection       float64
+	pressure            float64
+	tempAir             float64
+	tempWetbulb         float64
+	humidity            float64
+	illuminance         float64
+	uvIndex             float64
+	irradiance          float64
+	rainRate            float64
+	lightningDistance   *float64
+	lightningStrikeCount *float64
+	battery             *float64
+	reportInterval      *float64
 }
 
 type rapidWindRow struct {
@@ -176,12 +179,16 @@ func (w *PostgresWriter) insertObservations(batch []observationRow) error {
 			INSERT INTO tempest_observations (
 				serial_number, timestamp, wind_lull, wind_avg, wind_gust,
 				wind_direction, pressure, temp_air, temp_wetbulb, humidity,
-				illuminance, uv_index, irradiance, rain_rate, battery, report_interval
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+				illuminance, uv_index, irradiance, rain_rate,
+				lightning_distance, lightning_strike_count,
+				battery, report_interval
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 			ON CONFLICT (serial_number, timestamp) DO NOTHING
 		`, row.serialNumber, row.timestamp, row.windLull, row.windAvg, row.windGust,
 			row.windDirection, row.pressure, row.tempAir, row.tempWetbulb, row.humidity,
-			row.illuminance, row.uvIndex, row.irradiance, row.rainRate, row.battery, row.reportInterval)
+			row.illuminance, row.uvIndex, row.irradiance, row.rainRate,
+			row.lightningDistance, row.lightningStrikeCount,
+			row.battery, row.reportInterval)
 	}
 
 	br := w.pool.SendBatch(ctx, b)
@@ -416,12 +423,20 @@ func (w *PostgresWriter) WriteReport(ctx context.Context, report tempestudp.Repo
 	case *tempestudp.TempestObservationReport:
 		return w.handleObservationReport(ctx, r)
 
-	// Note: rapidWindReport is not exported from tempestudp package
-	// Rapid wind data will be handled via WriteMetrics path
-	// TODO: other report types (hub_status, events) in next tasks
+	case *tempestudp.RapidWindReport:
+		return w.handleRapidWindReport(ctx, r)
+
+	case *tempestudp.HubStatusReport:
+		return w.handleHubStatusReport(ctx, r)
+
+	case *tempestudp.RainStartReport:
+		return w.handleRainStartReport(ctx, r)
+
+	case *tempestudp.LightningStrikeReport:
+		return w.handleLightningStrikeReport(ctx, r)
 
 	default:
-		// Unknown report type - not an error
+		// Unknown report type (e.g., device_status) - not an error
 		return nil
 	}
 }
@@ -454,6 +469,14 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 			rainRate:      ob[12],
 		}
 
+		// Lightning fields (14 and 15)
+		if len(ob) >= 16 {
+			distance := ob[14]
+			count := ob[15]
+			row.lightningDistance = &distance
+			row.lightningStrikeCount = &count
+		}
+
 		// Optional fields
 		if len(ob) >= 17 {
 			battery := ob[16]
@@ -477,9 +500,235 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 	return nil
 }
 
+func (w *PostgresWriter) handleRapidWindReport(ctx context.Context, r *tempestudp.RapidWindReport) error {
+	if len(r.Ob) != 3 {
+		return nil // Invalid data
+	}
+
+	ts := time.Unix(int64(r.Ob[0]), 0)
+
+	row := rapidWindRow{
+		serialNumber:  r.SerialNumber,
+		timestamp:     ts,
+		windSpeed:     r.Ob[1],
+		windDirection: r.Ob[2],
+	}
+
+	// Send to batch channel (non-blocking)
+	select {
+	case w.windBatch <- row:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		log.Printf("postgres: rapid_wind batch channel full, dropping")
+	}
+
+	return nil
+}
+
+func (w *PostgresWriter) handleHubStatusReport(ctx context.Context, r *tempestudp.HubStatusReport) error {
+	if len(r.RadioStats) < 3 {
+		return nil // Invalid data
+	}
+
+	ts := time.Unix(r.Timestamp, 0)
+
+	row := hubStatusRow{
+		serialNumber: r.SerialNumber,
+		timestamp:    ts,
+		uptime:       r.Uptime,
+		rssi:         r.Rssi,
+		rebootCount:  r.RadioStats[1],
+		busErrors:    r.RadioStats[2],
+	}
+
+	// Send to batch channel (non-blocking)
+	select {
+	case w.hubBatch <- row:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		log.Printf("postgres: hub_status batch channel full, dropping")
+	}
+
+	return nil
+}
+
+func (w *PostgresWriter) handleRainStartReport(ctx context.Context, r *tempestudp.RainStartReport) error {
+	if len(r.Evt) < 1 {
+		return nil // Invalid data
+	}
+
+	ts := time.Unix(int64(r.Evt[0]), 0)
+
+	row := eventRow{
+		serialNumber: r.SerialNumber,
+		timestamp:    ts,
+		eventType:    "rain_start",
+		distanceKm:   nil, // Not applicable for rain
+		energy:       nil, // Not applicable for rain
+	}
+
+	// Send to batch channel (non-blocking)
+	select {
+	case w.eventBatch <- row:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		log.Printf("postgres: event batch channel full, dropping")
+	}
+
+	return nil
+}
+
+func (w *PostgresWriter) handleLightningStrikeReport(ctx context.Context, r *tempestudp.LightningStrikeReport) error {
+	if len(r.Evt) < 3 {
+		return nil // Invalid data
+	}
+
+	ts := time.Unix(int64(r.Evt[0]), 0)
+	distance := r.Evt[1]
+	energy := r.Evt[2]
+
+	row := eventRow{
+		serialNumber: r.SerialNumber,
+		timestamp:    ts,
+		eventType:    "lightning_strike",
+		distanceKm:   &distance,
+		energy:       &energy,
+	}
+
+	// Send to batch channel (non-blocking)
+	select {
+	case w.eventBatch <- row:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		log.Printf("postgres: event batch channel full, dropping")
+	}
+
+	return nil
+}
+
 // WriteMetrics implements MetricsWriter interface
+// This is used by the API export mode to write historical data
 func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.Metric) error {
-	// TODO: implement later
+	// Group metrics by timestamp and serial number to reconstruct observations
+	type metricKey struct {
+		serialNumber string
+		timestamp    time.Time
+	}
+
+	observations := make(map[metricKey]*observationRow)
+
+	for _, metric := range metrics {
+		var dto io_prometheus_client.Metric
+		if err := metric.Write(&dto); err != nil {
+			log.Printf("postgres: failed to write metric: %v", err)
+			continue
+		}
+
+		// Extract serial number from instance label
+		var serialNumber string
+		for _, label := range dto.GetLabel() {
+			if label.GetName() == "instance" {
+				serialNumber = label.GetValue()
+				break
+			}
+		}
+		if serialNumber == "" {
+			continue
+		}
+
+		// Extract timestamp
+		ts := time.UnixMilli(dto.GetTimestampMs())
+		key := metricKey{serialNumber: serialNumber, timestamp: ts}
+
+		// Get or create observation row
+		obs, exists := observations[key]
+		if !exists {
+			obs = &observationRow{
+				serialNumber: serialNumber,
+				timestamp:    ts,
+			}
+			observations[key] = obs
+		}
+
+		// Extract value
+		var value float64
+		if dto.GetGauge() != nil {
+			value = dto.GetGauge().GetValue()
+		} else if dto.GetCounter() != nil {
+			value = dto.GetCounter().GetValue()
+		}
+
+		// Map metric to field based on descriptor
+		desc := metric.Desc().String()
+		switch {
+		case strings.Contains(desc, "tempest_wind_ms"):
+			// Check kind label
+			for _, label := range dto.GetLabel() {
+				if label.GetName() == "kind" {
+					switch label.GetValue() {
+					case "lull":
+						obs.windLull = value
+					case "avg":
+						obs.windAvg = value
+					case "gust":
+						obs.windGust = value
+					}
+					break
+				}
+			}
+		case strings.Contains(desc, "tempest_wind_direction_degrees"):
+			obs.windDirection = value
+		case strings.Contains(desc, "tempest_pressure_pa"):
+			obs.pressure = value
+		case strings.Contains(desc, "tempest_temperature_c"):
+			// Check kind label
+			for _, label := range dto.GetLabel() {
+				if label.GetName() == "kind" {
+					switch label.GetValue() {
+					case "air":
+						obs.tempAir = value
+					case "wetbulb":
+						obs.tempWetbulb = value
+					}
+					break
+				}
+			}
+		case strings.Contains(desc, "tempest_humidity_percent"):
+			obs.humidity = value
+		case strings.Contains(desc, "tempest_illuminance_lux"):
+			obs.illuminance = value
+		case strings.Contains(desc, "tempest_uv_index"):
+			obs.uvIndex = value
+		case strings.Contains(desc, "tempest_irradiance_w_m2"):
+			obs.irradiance = value
+		case strings.Contains(desc, "tempest_rain_rate_mm_min"):
+			obs.rainRate = value
+		case strings.Contains(desc, "tempest_lightning_distance_km"):
+			obs.lightningDistance = &value
+		case strings.Contains(desc, "tempest_lightning_strike_count"):
+			obs.lightningStrikeCount = &value
+		case strings.Contains(desc, "tempest_battery_volts"):
+			obs.battery = &value
+		case strings.Contains(desc, "tempest_report_interval_s"):
+			obs.reportInterval = &value
+		}
+	}
+
+	// Send all observations to the batch channel
+	for _, obs := range observations {
+		select {
+		case w.obsBatch <- *obs:
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			log.Printf("postgres: observation batch channel full during WriteMetrics, dropping")
+		}
+	}
+
 	return nil
 }
 

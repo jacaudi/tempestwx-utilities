@@ -27,17 +27,17 @@ func ParseReport(bytes []byte) (Report, error) {
 	var data Report
 	switch typ.Type {
 	case "evt_precip":
-		data = &rainStartReport{}
+		data = &RainStartReport{}
 	case "evt_strike":
-		data = &lightningStrikeReport{}
+		data = &LightningStrikeReport{}
 	case "rapid_wind":
-		data = &rapidWindReport{}
+		data = &RapidWindReport{}
 	case "obs_st":
 		data = &TempestObservationReport{}
 	case "device_status":
-		data = &deviceStatusReport{}
+		data = &DeviceStatusReport{}
 	case "hub_status":
-		data = &hubStatusReport{}
+		data = &HubStatusReport{}
 	default:
 		return nil, fmt.Errorf("unhandled message type: %q", typ.Type)
 	}
@@ -49,7 +49,7 @@ func ParseReport(bytes []byte) (Report, error) {
 	}
 }
 
-type rainStartReport struct {
+type RainStartReport struct {
 	SerialNumber string `json:"serial_number"`
 
 	// "evt_precip"
@@ -61,11 +61,11 @@ type rainStartReport struct {
 	Evt []float64 `json:"evt"`
 }
 
-func (r rainStartReport) Metrics() []prometheus.Metric {
+func (r RainStartReport) Metrics() []prometheus.Metric {
 	return nil
 }
 
-type lightningStrikeReport struct {
+type LightningStrikeReport struct {
 	SerialNumber string `json:"serial_number"`
 
 	// "evt_strike"
@@ -79,11 +79,11 @@ type lightningStrikeReport struct {
 	Evt []float64 `json:"evt"`
 }
 
-func (r lightningStrikeReport) Metrics() []prometheus.Metric {
+func (r LightningStrikeReport) Metrics() []prometheus.Metric {
 	return nil
 }
 
-type rapidWindReport struct {
+type RapidWindReport struct {
 	SerialNumber string `json:"serial_number"`
 
 	// "rapid_wind"
@@ -93,7 +93,7 @@ type rapidWindReport struct {
 	Ob    []float64 `json:"ob"`
 }
 
-func (r rapidWindReport) Metrics() []prometheus.Metric {
+func (r RapidWindReport) Metrics() []prometheus.Metric {
 	if len(r.Ob) != 3 {
 		return nil
 	}
@@ -160,7 +160,15 @@ func (r TempestObservationReport) Metrics() []prometheus.Metric {
 			prometheus.MustNewConstMetric(tempest.Irradiance, prometheus.GaugeValue, ob[11], r.SerialNumber),
 			prometheus.MustNewConstMetric(tempest.RainRate, prometheus.GaugeValue, ob[12], r.SerialNumber),
 		}
-		// todo: lightning
+
+		// Lightning metrics (fields 14 and 15)
+		if len(ob) >= 16 {
+			metrics = append(metrics,
+				prometheus.MustNewConstMetric(tempest.LightningDistance, prometheus.GaugeValue, ob[14], r.SerialNumber),
+				prometheus.MustNewConstMetric(tempest.LightningStrikeCount, prometheus.GaugeValue, ob[15], r.SerialNumber),
+			)
+		}
+
 		if len(ob) >= 17 {
 			metrics = append(metrics,
 				prometheus.MustNewConstMetric(tempest.Battery, prometheus.GaugeValue, ob[16], r.SerialNumber),
@@ -178,7 +186,7 @@ func (r TempestObservationReport) Metrics() []prometheus.Metric {
 	return out
 }
 
-type deviceStatusReport struct {
+type DeviceStatusReport struct {
 	SerialNumber string `json:"serial_number"`
 
 	// "device_status"
@@ -211,11 +219,11 @@ type deviceStatusReport struct {
 	Debug int `json:"debug"`
 }
 
-func (r deviceStatusReport) Metrics() []prometheus.Metric {
+func (r DeviceStatusReport) Metrics() []prometheus.Metric {
 	return nil
 }
 
-type hubStatusReport struct {
+type HubStatusReport struct {
 	SerialNumber string `json:"serial_number"`
 
 	// "hub_status"
@@ -248,7 +256,7 @@ type hubStatusReport struct {
 	MqttStats []int `json:"mqtt_stats"`
 }
 
-func (r hubStatusReport) Metrics() []prometheus.Metric {
+func (r HubStatusReport) Metrics() []prometheus.Metric {
 	return withTime(r.Timestamp, []prometheus.Metric{
 		prometheus.MustNewConstMetric(tempest.Uptime, prometheus.CounterValue, r.Uptime, r.SerialNumber),
 		prometheus.MustNewConstMetric(tempest.Rssi, prometheus.GaugeValue, r.Rssi, r.SerialNumber),

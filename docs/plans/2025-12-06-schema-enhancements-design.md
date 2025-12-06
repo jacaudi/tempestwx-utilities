@@ -263,167 +263,67 @@ All tables get same UUID migration (BIGSERIAL → UUID with Go-generated UUIDv7)
 - Temperature: `19.0` °C
 - Wind Speed: `0.49` m/s
 
-## Migration Plan
+## Implementation Notes
 
-### ⚠️ Breaking Change: Existing Data
+### Version: v1.0.0
 
-**IMPORTANT**: This migration removes unit conversions from the codebase.
-
-**Current behavior (to be removed)**:
-- Pressure: Stored as Pascals (UDP value × 100)
-- Report interval: Stored as seconds (UDP value × 60)
-
-**New behavior**:
-- Pressure: Stored as millibars (raw UDP value)
-- Report interval: Stored as minutes (raw UDP value)
-
-**Impact on existing data**: If you have existing observations data with converted values, those rows will have different units than new rows. Options:
-1. **Recommended**: Drop and recreate tables (acceptable if data is recent/test data)
-2. **Preserve data**: Run conversion SQL to convert existing values back to raw units:
-   ```sql
-   UPDATE tempest_observations SET
-     pressure = pressure / 100,
-     report_interval = report_interval / 60;
-   ```
+This is a **clean implementation** for the v1.0.0 release. No migration needed - all changes are part of the initial stable schema.
 
 ### Prerequisites
-1. Database backup
-2. Add `github.com/google/uuid` to go.mod
-3. Create migration SQL scripts
-4. **Decide**: Drop tables or convert existing data
+1. Add `github.com/google/uuid` to go.mod
+2. Update schema constants in `internal/postgres/schema.go`
+3. Update row structs in `internal/postgres/writer.go`
 
-### Phase 1: Add Missing Fields (Low Risk)
-**Estimated Time**: 1 minute
-**Downtime**: None (backward compatible)
+### Schema Changes
 
-```sql
--- migrations/001_add_missing_fields.sql
-ALTER TABLE tempest_observations
-  ADD COLUMN IF NOT EXISTS wind_sample_interval DOUBLE PRECISION,
-  ADD COLUMN IF NOT EXISTS precip_type INTEGER;
+**1. Update `internal/postgres/schema.go`**:
+- Change all `id BIGSERIAL PRIMARY KEY` to `id UUID PRIMARY KEY`
+- Add `wind_sample_interval DOUBLE PRECISION` column
+- Add `precip_type INTEGER` column
+- Remove pressure/interval conversion comments
+
+**2. Update `internal/postgres/writer.go`**:
+- Add `id uuid.UUID` field to all row structs
+- Generate UUID in all handler methods: `uuid.Must(uuid.NewV7())`
+- Add `wind_sample_interval` and `precip_type` to `observationRow`
+- Extract fields 5 and 13 from UDP observation messages
+- Include `id` in all INSERT statements
+- **Remove conversions**: Store pressure as `ob[6]` (not `ob[6]*100`)
+- **Remove conversions**: Store report_interval as `ob[17]` (not `ob[17]*60`)
+
+**3. Update `internal/tempestudp/report.go`**:
+- **Remove conversions** from Prometheus metrics:
+  - Pressure: `ob[6]` instead of `ob[6]*100`
+  - Report interval: `ob[17]` instead of `ob[17]*60`
+
+**4. Update `go.mod`**:
+```bash
+go get github.com/google/uuid
 ```
 
-**Deploy**: Run migration, deploy updated Go code (extracts new fields)
-
-**Rollback**: Go code handles NULL values gracefully
-
-### Phase 2: UUID Migration (Coordinated)
-**Estimated Time**: 5-10 minutes (depends on table size)
-**Downtime**: Brief (during primary key swap)
-
-#### Step 1: Add UUID Column
-```sql
--- migrations/002_add_uuid_column.sql
-ALTER TABLE tempest_observations ADD COLUMN new_id UUID;
-ALTER TABLE tempest_rapid_wind ADD COLUMN new_id UUID;
-ALTER TABLE tempest_hub_status ADD COLUMN new_id UUID;
-ALTER TABLE tempest_events ADD COLUMN new_id UUID;
-```
-
-#### Step 2: Deploy Updated Go Code
-- Go code generates UUIDs and writes to `new_id` column
-- Existing rows still have NULL `new_id` (handled gracefully)
-
-#### Step 3: Backfill Existing Rows
-```sql
--- migrations/003_backfill_uuids.sql
-UPDATE tempest_observations SET new_id = gen_random_uuid() WHERE new_id IS NULL;
-UPDATE tempest_rapid_wind SET new_id = gen_random_uuid() WHERE new_id IS NULL;
-UPDATE tempest_hub_status SET new_id = gen_random_uuid() WHERE new_id IS NULL;
-UPDATE tempest_events SET new_id = gen_random_uuid() WHERE new_id IS NULL;
-```
-
-#### Step 4: Swap Primary Keys (Brief Downtime)
-```sql
--- migrations/004_swap_primary_keys.sql
-BEGIN;
-
--- tempest_observations
-ALTER TABLE tempest_observations
-  ALTER COLUMN new_id SET NOT NULL,
-  DROP CONSTRAINT tempest_observations_pkey,
-  ADD PRIMARY KEY (new_id),
-  DROP COLUMN id,
-  RENAME COLUMN new_id TO id;
-
--- tempest_rapid_wind
-ALTER TABLE tempest_rapid_wind
-  ALTER COLUMN new_id SET NOT NULL,
-  DROP CONSTRAINT tempest_rapid_wind_pkey,
-  ADD PRIMARY KEY (new_id),
-  DROP COLUMN id,
-  RENAME COLUMN new_id TO id;
-
--- tempest_hub_status
-ALTER TABLE tempest_hub_status
-  ALTER COLUMN new_id SET NOT NULL,
-  DROP CONSTRAINT tempest_hub_status_pkey,
-  ADD PRIMARY KEY (new_id),
-  DROP COLUMN id,
-  RENAME COLUMN new_id TO id;
-
--- tempest_events
-ALTER TABLE tempest_events
-  ALTER COLUMN new_id SET NOT NULL,
-  DROP CONSTRAINT tempest_events_pkey,
-  ADD PRIMARY KEY (new_id),
-  DROP COLUMN id,
-  RENAME COLUMN new_id TO id;
-
-COMMIT;
-```
-
-**Downtime Window**: Stop application → Run migration → Restart application
-
-**Rollback**: Restore from backup (complex after this point)
-
-### Phase 3: Cleanup Updated Schema Constants
-Update `internal/postgres/schema.go` to reflect final state:
-```sql
-CREATE TABLE IF NOT EXISTS tempest_observations (
-    id UUID PRIMARY KEY,  -- Changed from BIGSERIAL
-    serial_number TEXT NOT NULL,
-    timestamp TIMESTAMPTZ NOT NULL,
-    -- ... all fields including new ones ...
-)
-```
-
-## Testing Strategy
+## Testing Checklist
 
 ### Unit Tests
-- Test UUID generation in row creation
-- Test INSERT statements include id field
-- Test field extraction for wind_sample_interval and precip_type
+- ✅ Test UUID generation in row creation
+- ✅ Test INSERT statements include id field
+- ✅ Test field extraction for wind_sample_interval and precip_type
+- ✅ Verify raw values stored (no conversions)
 
 ### Integration Tests
-- Verify schema creation with new columns
-- Test data insertion with UUIDs
-- Verify UNIQUE constraint still works on (serial_number, timestamp)
-
-### Migration Testing
-1. Create test database with sample data
-2. Run Phase 1 migration (add fields)
-3. Run Phase 2 migration (UUID transition)
-4. Verify all data preserved
-5. Verify new inserts work correctly
-
-## Risks and Mitigations
-
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| UUID generation failure | Insert failures | Use `uuid.Must()` to panic on error, catch at application level |
-| Long migration time | Extended downtime | Test on copy of production data to estimate time |
-| Backfill UUIDs too slow | Downtime extends | Run backfill during low-traffic period, add indexes after |
-| Primary key swap fails | Application down | Have backup ready, test migration script thoroughly |
+- ✅ Verify schema creation with new columns and UUID PKs
+- ✅ Test data insertion with UUIDs
+- ✅ Verify UNIQUE constraint still works on (serial_number, timestamp)
+- ✅ Verify pressure stored as mb, not Pascals
+- ✅ Verify report_interval stored as minutes, not seconds
 
 ## Success Criteria
 
-- ✅ All existing data preserved with no loss
 - ✅ New fields (`wind_sample_interval`, `precip_type`) captured from UDP messages
 - ✅ All primary keys use UUIDv7 generated in Go
-- ✅ Application continues writing data without errors
-- ✅ UNIQUE constraints on (serial_number, timestamp) still enforced
+- ✅ Application writes data without errors
+- ✅ UNIQUE constraints on (serial_number, timestamp) enforced
 - ✅ No PostgreSQL extensions required
+- ✅ **Raw UDP values stored** (pressure in mb, interval in minutes)
 
 ## Future Considerations
 

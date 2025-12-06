@@ -19,9 +19,11 @@ var (
 	ReportInterval *prometheus.Desc
 	Irradiance     *prometheus.Desc
 	RainTotal      *prometheus.Desc
-	Pressure       *prometheus.Desc
-	Temperature    *prometheus.Desc // "air", "wetbulb"
-	Humidity       *prometheus.Desc
+	Pressure              *prometheus.Desc
+	Temperature           *prometheus.Desc // "air", "wetbulb"
+	Humidity              *prometheus.Desc
+	LightningDistance     *prometheus.Desc
+	LightningStrikeCount  *prometheus.Desc
 )
 
 var All []*prometheus.Desc
@@ -44,8 +46,8 @@ func init() {
 	Pressure = prometheus.NewDesc("tempest_pressure_pa", "A barometric pressure measurement", []string{"instance"}, nil)
 	Temperature = prometheus.NewDesc("tempest_temperature_c", "A temperature measurement", []string{"instance", "kind"}, nil)
 	Humidity = prometheus.NewDesc("tempest_humidity_percent", "A relative humidity measurement", []string{"instance"}, nil)
-
-	// todo: lightning
+	LightningDistance = prometheus.NewDesc("tempest_lightning_distance_km", "Average distance of lightning strikes detected in the last minute", []string{"instance"}, nil)
+	LightningStrikeCount = prometheus.NewDesc("tempest_lightning_strike_count", "Number of lightning strikes detected in the last minute", []string{"instance"}, nil)
 
 	All = []*prometheus.Desc{
 		Uptime,
@@ -65,5 +67,7 @@ func init() {
 		Pressure,
 		Temperature,
 		Humidity,
+		LightningDistance,
+		LightningStrikeCount,
 	}
 }

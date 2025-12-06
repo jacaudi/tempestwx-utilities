@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS tempest_observations (
 
     rain_rate     DOUBLE PRECISION,
 
+    lightning_distance DOUBLE PRECISION,
+    lightning_strike_count DOUBLE PRECISION,
+
     battery       DOUBLE PRECISION,
     report_interval DOUBLE PRECISION,
 

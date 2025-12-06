@@ -94,6 +94,14 @@ func Test_tempestObservationReport_Metrics(t *testing.T) {
 					value: 0,
 				},
 				{
+					desc:  tempest.LightningDistance,
+					value: 0,
+				},
+				{
+					desc:  tempest.LightningStrikeCount,
+					value: 0,
+				},
+				{
 					desc:  tempest.Battery,
 					value: 2.792,
 				},
@@ -236,7 +244,7 @@ func TestParseReport(t *testing.T) {
 		{
 			name:  "rapid wind",
 			input: `{"serial_number":"ST-00019709","type":"rapid_wind","hub_sn":"HB-00031344","ob":[1688666352,0.09,97]}`,
-			want: &rapidWindReport{
+			want: &RapidWindReport{
 				SerialNumber: "ST-00019709",
 				Type:         "rapid_wind",
 				HubSn:        "HB-00031344",
@@ -257,7 +265,7 @@ func TestParseReport(t *testing.T) {
 		{
 			name:  "device status",
 			input: `{"serial_number":"ST-00019709","type":"device_status","hub_sn":"HB-00031344","timestamp":1688666521,"uptime":63807156,"voltage":2.792,"firmware_revision":156,"rssi":-82,"hub_rssi":-78,"sensor_status":0,"debug":0}`,
-			want: &deviceStatusReport{
+			want: &DeviceStatusReport{
 				SerialNumber:     "ST-00019709",
 				Type:             "device_status",
 				HubSn:            "HB-00031344",
@@ -274,7 +282,7 @@ func TestParseReport(t *testing.T) {
 		{
 			name:  "hub status",
 			input: `{"serial_number":"HB-00031344","type":"hub_status","firmware_revision":"171","uptime":63975,"rssi":-44,"timestamp":1688666350,"reset_flags":"BOR,PIN,POR","seq":6389,"fs":[1,0,15675411,524288],"radio_stats":[25,1,0,3,16344],"mqtt_stats":[1,4]}`,
-			want: &hubStatusReport{
+			want: &HubStatusReport{
 				SerialNumber:     "HB-00031344",
 				Type:             "hub_status",
 				FirmwareRevision: "171",
