@@ -13,15 +13,15 @@ COPY . .
 
 # Build the application
 RUN CGO_ENABLED=0 \
-    go build -ldflags="-w -s" -o tempestwx-exporter main.go
+    go build -ldflags="-w -s" -o tempestwx-utilities main.go
 
 # Final stage
 FROM cgr.dev/chainguard/static:latest
 
 # Copy binary
-COPY --from=builder /app/tempestwx-exporter /tempestwx-exporter
+COPY --from=builder /app/tempestwx-utilities /tempestwx-utilities
 
 # Use non-root user
 USER 65532:65532
 
-ENTRYPOINT ["/tempestwx-exporter"]
+ENTRYPOINT ["/tempestwx-utilities"]
