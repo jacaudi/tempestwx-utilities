@@ -167,7 +167,7 @@ b.Queue(`
 | wind_gust | 3 | m/s | DOUBLE PRECISION | |
 | wind_direction | 4 | degrees | DOUBLE PRECISION | |
 | **wind_sample_interval** | **5** | **seconds** | **DOUBLE PRECISION** | **NEW** |
-| pressure | 6 | Pascals | DOUBLE PRECISION | Converted from mb |
+| pressure | 6 | mb | DOUBLE PRECISION | Raw UDP value |
 | temp_air | 7 | °C | DOUBLE PRECISION | |
 | temp_wetbulb | calculated | °C | DOUBLE PRECISION | |
 | humidity | 8 | % | DOUBLE PRECISION | |
@@ -179,7 +179,7 @@ b.Queue(`
 | lightning_distance | 14 | km | DOUBLE PRECISION | |
 | lightning_strike_count | 15 | count | DOUBLE PRECISION | |
 | battery | 16 | volts | DOUBLE PRECISION | |
-| report_interval | 17 | seconds | DOUBLE PRECISION | Converted from minutes |
+| report_interval | 17 | minutes | DOUBLE PRECISION | Raw UDP value |
 
 #### tempest_rapid_wind, tempest_hub_status, tempest_events
 All tables get same UUID migration (BIGSERIAL → UUID with Go-generated UUIDv7).
@@ -199,7 +199,7 @@ All tables get same UUID migration (BIGSERIAL → UUID with Go-generated UUIDv7)
 | wind_gust | m/s (meters/second) | DOUBLE PRECISION | No conversion |
 | wind_direction | degrees (0-360°) | DOUBLE PRECISION | No conversion |
 | wind_sample_interval | seconds | DOUBLE PRECISION | No conversion |
-| pressure | Pascals (Pa) | DOUBLE PRECISION | **Converted from mb × 100** |
+| pressure | mb (millibars) | DOUBLE PRECISION | Raw UDP value |
 | temp_air | °C (Celsius) | DOUBLE PRECISION | No conversion |
 | temp_wetbulb | °C (Celsius) | DOUBLE PRECISION | Calculated from temp/RH/pressure |
 | humidity | % (0-100) | DOUBLE PRECISION | No conversion |
@@ -211,7 +211,7 @@ All tables get same UUID migration (BIGSERIAL → UUID with Go-generated UUIDv7)
 | lightning_distance | km (kilometers) | DOUBLE PRECISION | No conversion |
 | lightning_strike_count | count | DOUBLE PRECISION | No conversion |
 | battery | volts | DOUBLE PRECISION | No conversion |
-| report_interval | seconds | DOUBLE PRECISION | **Converted from minutes × 60** |
+| report_interval | minutes | DOUBLE PRECISION | Raw UDP value |
 
 #### tempest_rapid_wind
 | Field | Unit | PostgreSQL Storage | Conversion Notes |
@@ -243,25 +243,54 @@ All tables get same UUID migration (BIGSERIAL → UUID with Go-generated UUIDv7)
 | distance_km | km (kilometers) | DOUBLE PRECISION | Lightning only, NULL for rain |
 | energy | (unspecified) | DOUBLE PRECISION | Lightning only, NULL for rain |
 
-### Unit Conversions Applied
+### Data Storage Policy: Raw Values
 
-**Conversions performed by Go code before storage:**
-1. **Pressure**: UDP sends `mb` (millibars) → Store as `Pa` (Pascals) by multiplying × 100
-2. **Report Interval**: UDP sends `minutes` → Store as `seconds` by multiplying × 60
-3. **Wet Bulb Temperature**: Calculated using psychrometric formula from air temp, humidity, and pressure
+**All UDP fields stored exactly as received** - no unit conversions applied.
 
-**No conversion needed:**
-- Wind measurements (already in m/s)
-- Temperatures (already in °C)
-- Humidity (already in %)
-- All other fields stored as received
+**Rationale:**
+- Preserves original data integrity
+- Simpler code with fewer bugs
+- Easier to verify against UDP spec
+- Unit conversions can be applied in queries/dashboards
+- Future-proof if UDP API changes units
+
+**Calculated Fields:**
+- **Wet Bulb Temperature**: Derived field calculated from air temp, humidity, and pressure using psychrometric formula (not in UDP message)
+
+**Example Raw Values:**
+- Pressure: `987.81` mb (not converted to Pascals)
+- Report Interval: `1` minute (not converted to seconds)
+- Temperature: `19.0` °C
+- Wind Speed: `0.49` m/s
 
 ## Migration Plan
+
+### ⚠️ Breaking Change: Existing Data
+
+**IMPORTANT**: This migration removes unit conversions from the codebase.
+
+**Current behavior (to be removed)**:
+- Pressure: Stored as Pascals (UDP value × 100)
+- Report interval: Stored as seconds (UDP value × 60)
+
+**New behavior**:
+- Pressure: Stored as millibars (raw UDP value)
+- Report interval: Stored as minutes (raw UDP value)
+
+**Impact on existing data**: If you have existing observations data with converted values, those rows will have different units than new rows. Options:
+1. **Recommended**: Drop and recreate tables (acceptable if data is recent/test data)
+2. **Preserve data**: Run conversion SQL to convert existing values back to raw units:
+   ```sql
+   UPDATE tempest_observations SET
+     pressure = pressure / 100,
+     report_interval = report_interval / 60;
+   ```
 
 ### Prerequisites
 1. Database backup
 2. Add `github.com/google/uuid` to go.mod
 3. Create migration SQL scripts
+4. **Decide**: Drop tables or convert existing data
 
 ### Phase 1: Add Missing Fields (Low Risk)
 **Estimated Time**: 1 minute
