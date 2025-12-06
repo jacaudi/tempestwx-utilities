@@ -15,5 +15,6 @@
     "postUpdateOptions": [
       "gomodTidy"
     ],
-    "forkProcessing": "enabled"
+    "forkProcessing": "enabled",
+    "assignees": ["jacaudi"]
 }
