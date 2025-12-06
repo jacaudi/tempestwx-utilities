@@ -184,16 +184,18 @@ func (w *PostgresWriter) insertObservations(batch []observationRow) error {
 	for _, row := range batch {
 		b.Queue(`
 			INSERT INTO tempest_observations (
-				serial_number, timestamp, wind_lull, wind_avg, wind_gust,
-				wind_direction, pressure, temp_air, temp_wetbulb, humidity,
-				illuminance, uv_index, irradiance, rain_rate,
+				id, serial_number, timestamp,
+				wind_lull, wind_avg, wind_gust, wind_direction, wind_sample_interval,
+				pressure, temp_air, temp_wetbulb, humidity,
+				illuminance, uv_index, irradiance, rain_rate, precip_type,
 				lightning_distance, lightning_strike_count,
 				battery, report_interval
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 			ON CONFLICT (serial_number, timestamp) DO NOTHING
-		`, row.serialNumber, row.timestamp, row.windLull, row.windAvg, row.windGust,
-			row.windDirection, row.pressure, row.tempAir, row.tempWetbulb, row.humidity,
-			row.illuminance, row.uvIndex, row.irradiance, row.rainRate,
+		`, row.id, row.serialNumber, row.timestamp,
+			row.windLull, row.windAvg, row.windGust, row.windDirection, row.windSampleInterval,
+			row.pressure, row.tempAir, row.tempWetbulb, row.humidity,
+			row.illuminance, row.uvIndex, row.irradiance, row.rainRate, row.precipType,
 			row.lightningDistance, row.lightningStrikeCount,
 			row.battery, row.reportInterval)
 	}
@@ -273,10 +275,10 @@ func (w *PostgresWriter) insertRapidWind(batch []rapidWindRow) error {
 	for _, row := range batch {
 		b.Queue(`
 			INSERT INTO tempest_rapid_wind (
-				serial_number, timestamp, wind_speed, wind_direction
-			) VALUES ($1, $2, $3, $4)
+				id, serial_number, timestamp, wind_speed, wind_direction
+			) VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (serial_number, timestamp) DO NOTHING
-		`, row.serialNumber, row.timestamp, row.windSpeed, row.windDirection)
+		`, row.id, row.serialNumber, row.timestamp, row.windSpeed, row.windDirection)
 	}
 
 	br := w.pool.SendBatch(ctx, b)
@@ -349,10 +351,10 @@ func (w *PostgresWriter) insertHubStatus(batch []hubStatusRow) error {
 	for _, row := range batch {
 		b.Queue(`
 			INSERT INTO tempest_hub_status (
-				serial_number, timestamp, uptime, rssi, reboot_count, bus_errors
-			) VALUES ($1, $2, $3, $4, $5, $6)
+				id, serial_number, timestamp, uptime, rssi, reboot_count, bus_errors
+			) VALUES ($1, $2, $3, $4, $5, $6, $7)
 			ON CONFLICT (serial_number, timestamp) DO NOTHING
-		`, row.serialNumber, row.timestamp, row.uptime, row.rssi, row.rebootCount, row.busErrors)
+		`, row.id, row.serialNumber, row.timestamp, row.uptime, row.rssi, row.rebootCount, row.busErrors)
 	}
 
 	br := w.pool.SendBatch(ctx, b)
@@ -405,10 +407,10 @@ func (w *PostgresWriter) insertEvents(batch []eventRow) error {
 	for _, row := range batch {
 		b.Queue(`
 			INSERT INTO tempest_events (
-				serial_number, timestamp, event_type, distance_km, energy
-			) VALUES ($1, $2, $3, $4, $5)
+				id, serial_number, timestamp, event_type, distance_km, energy
+			) VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (serial_number, timestamp, event_type) DO NOTHING
-		`, row.serialNumber, row.timestamp, row.eventType, row.distanceKm, row.energy)
+		`, row.id, row.serialNumber, row.timestamp, row.eventType, row.distanceKm, row.energy)
 	}
 
 	br := w.pool.SendBatch(ctx, b)
@@ -674,6 +676,7 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 		obs, exists := observations[key]
 		if !exists {
 			obs = &observationRow{
+				id:           uuid.Must(uuid.NewV7()),
 				serialNumber: serialNumber,
 				timestamp:    ts,
 			}
