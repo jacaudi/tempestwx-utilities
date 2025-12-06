@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"tempestwx-exporter/internal/tempest"
+	"tempestwx-utilities/internal/tempest"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -144,7 +144,7 @@ func (r TempestObservationReport) Metrics() []prometheus.Metric {
 			continue
 		}
 
-		wetBulb := wetBulbTemperatureC(ob[7], ob[8], ob[6])
+		wetBulb := WetBulbTemperatureC(ob[7], ob[8], ob[6])
 
 		metrics := []prometheus.Metric{
 			prometheus.MustNewConstMetric(tempest.Wind, prometheus.GaugeValue, ob[1], r.SerialNumber, "lull"),

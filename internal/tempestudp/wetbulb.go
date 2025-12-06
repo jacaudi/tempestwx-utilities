@@ -12,7 +12,8 @@ func wetBulbVaporPressure(tC, twC float64, stationPressureHpa float64) float64 {
 	return saturatedVaporPressure(twC) - stationPressureHpa*(tC-twC)*0.00066*(1+0.00115*twC)
 }
 
-func wetBulbTemperatureC(temperatureC float64, humidityPercent float64, stationPressureHpa float64) float64 {
+// WetBulbTemperatureC calculates wet bulb temperature in Celsius
+func WetBulbTemperatureC(temperatureC float64, humidityPercent float64, stationPressureHpa float64) float64 {
 	// Determine the saturated vapor pressure for the station temperature
 	eSaturated := saturatedVaporPressure(temperatureC)
 
