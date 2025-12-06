@@ -196,7 +196,7 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 		// Optionally write to .gz files
 		if keepFiles {
 			filename := fmt.Sprintf("tempest_%03d.txt.gz", fileNum)
-			if err := writeMetricsToFile(ctx, filename, metrics); err != nil {
+			if err := writeMetricsToFile(filename, metrics); err != nil {
 				log.Fatalf("error writing file: %v", err)
 			}
 			fileNum++
@@ -206,7 +206,7 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 	log.Printf("export complete")
 }
 
-func writeMetricsToFile(ctx context.Context, filename string, metrics []promclient.Metric) error {
+func writeMetricsToFile(filename string, metrics []promclient.Metric) error {
 	// Create collector for metrics
 	collector := &staticCollector{metrics: metrics}
 
@@ -227,7 +227,7 @@ func writeMetricsToFile(ctx context.Context, filename string, metrics []promclie
 	gzw := gzip.NewWriter(f)
 	defer gzw.Close()
 
-	enc := expfmt.NewEncoder(gzw, expfmt.FmtText)
+	enc := expfmt.NewEncoder(gzw, expfmt.NewFormat(expfmt.TypeTextPlain))
 	for _, family := range families {
 		if err := enc.Encode(family); err != nil {
 			return fmt.Errorf("encode metrics: %w", err)
