@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"tempestwx-exporter/internal/tempestudp"
+	"tempestwx-utilities/internal/tempestudp"
 )
 
 func TestPrometheusWriter_WriteReport(t *testing.T) {

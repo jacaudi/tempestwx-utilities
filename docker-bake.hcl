@@ -15,7 +15,7 @@ variable "SOURCE_COMMIT" {
 }
 
 variable "APP" {
-  default = "tempestwx-exporter"
+  default = "tempestwx-utilities"
 }
 
 variable "VERSION" {
@@ -23,7 +23,7 @@ variable "VERSION" {
 }
 
 variable "SOURCE" {
-  default = "https://github.com/jacaudi/tempestwx-exporter"
+  default = "https://github.com/jacaudi/tempestwx-utilities"
 }
 
 group "default" {
@@ -38,7 +38,7 @@ target "image" {
     "org.opencontainers.image.created" = "${BUILD_DATE}"
     "org.opencontainers.image.version" = "${VERSION}"
     "org.opencontainers.image.title" = "${APP}" 
-    "org.opencontainers.image.description" = "Prometheus exporter for Tempest weather station data"
+    "org.opencontainers.image.description" = "Multi-backend utilities for Tempest weather station data (Prometheus, PostgreSQL)"
     "org.opencontainers.image.licenses" = "MIT"
   }
 }
@@ -62,7 +62,7 @@ target "image-automated" {
     "index:org.opencontainers.image.created=${BUILD_DATE}",
     "index:org.opencontainers.image.version=${VERSION}",
     "index:org.opencontainers.image.title=${APP}",
-    "index:org.opencontainers.image.description=Prometheus exporter for Tempest weather station data",
+    "index:org.opencontainers.image.description=Multi-backend utilities for Tempest weather station data (Prometheus, PostgreSQL)",
     "index:org.opencontainers.image.licenses=MIT"
   ]
 }

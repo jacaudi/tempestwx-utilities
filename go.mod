@@ -1,4 +1,4 @@
-module tempestwx-exporter
+module tempestwx-utilities
 
 go 1.24.0
 

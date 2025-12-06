@@ -12,12 +12,12 @@ import (
 	"strconv"
 	"time"
 
-	"tempestwx-exporter/internal/config"
-	"tempestwx-exporter/internal/prometheus"
-	"tempestwx-exporter/internal/postgres"
-	"tempestwx-exporter/internal/sink"
-	"tempestwx-exporter/internal/tempestapi"
-	"tempestwx-exporter/internal/tempestudp"
+	"tempestwx-utilities/internal/config"
+	"tempestwx-utilities/internal/prometheus"
+	"tempestwx-utilities/internal/postgres"
+	"tempestwx-utilities/internal/sink"
+	"tempestwx-utilities/internal/tempestapi"
+	"tempestwx-utilities/internal/tempestudp"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"

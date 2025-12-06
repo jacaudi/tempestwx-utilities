@@ -5,7 +5,7 @@ import (
 	"log"
 	"sync"
 
-	"tempestwx-exporter/internal/tempestudp"
+	"tempestwx-utilities/internal/tempestudp"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
