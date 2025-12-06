@@ -460,13 +460,14 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 		wetBulb := tempestudp.WetBulbTemperatureC(ob[7], ob[8], ob[6])
 
 		row := observationRow{
+			id:            uuid.Must(uuid.NewV7()), // Generate UUIDv7
 			serialNumber:  r.SerialNumber,
 			timestamp:     ts,
 			windLull:      ob[1],
 			windAvg:       ob[2],
 			windGust:      ob[3],
 			windDirection: ob[4],
-			pressure:      ob[6] * 100, // MB to Pascals
+			pressure:      ob[6], // Raw mb value (no conversion)
 			tempAir:       ob[7],
 			tempWetbulb:   wetBulb,
 			humidity:      ob[8],
@@ -474,6 +475,18 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 			uvIndex:       ob[10],
 			irradiance:    ob[11],
 			rainRate:      ob[12],
+		}
+
+		// Field 5: wind_sample_interval (seconds)
+		if len(ob) >= 6 {
+			interval := ob[5]
+			row.windSampleInterval = &interval
+		}
+
+		// Field 13: precip_type (0=none, 1=rain, 2=hail, 3=rain+hail)
+		if len(ob) >= 14 {
+			precipType := int(ob[13])
+			row.precipType = &precipType
 		}
 
 		// Lightning fields (14 and 15)
@@ -484,13 +497,15 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 			row.lightningStrikeCount = &count
 		}
 
-		// Optional fields
+		// Field 16: battery
 		if len(ob) >= 17 {
 			battery := ob[16]
 			row.battery = &battery
 		}
+
+		// Field 17: report_interval (minutes - raw value)
 		if len(ob) >= 18 {
-			interval := ob[17] * 60 // minutes to seconds
+			interval := ob[17] // Raw minutes value (no conversion)
 			row.reportInterval = &interval
 		}
 
