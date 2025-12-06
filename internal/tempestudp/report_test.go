@@ -61,7 +61,7 @@ func Test_tempestObservationReport_Metrics(t *testing.T) {
 				},
 				{
 					desc:  tempest.Pressure,
-					value: 98781,
+					value: 987.81,
 				},
 				{
 					desc:   tempest.Temperature,
@@ -107,7 +107,7 @@ func Test_tempestObservationReport_Metrics(t *testing.T) {
 				},
 				{
 					desc:  tempest.ReportInterval,
-					value: 60, // seconds
+					value: 1, // minutes
 				},
 			},
 		},
