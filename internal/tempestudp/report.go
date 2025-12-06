@@ -151,7 +151,7 @@ func (r TempestObservationReport) Metrics() []prometheus.Metric {
 			prometheus.MustNewConstMetric(tempest.Wind, prometheus.GaugeValue, ob[2], r.SerialNumber, "avg"),
 			prometheus.MustNewConstMetric(tempest.Wind, prometheus.GaugeValue, ob[3], r.SerialNumber, "gust"),
 			prometheus.MustNewConstMetric(tempest.WindDirection, prometheus.GaugeValue, ob[4], r.SerialNumber),
-			prometheus.MustNewConstMetric(tempest.Pressure, prometheus.GaugeValue, ob[6]*100, r.SerialNumber),
+			prometheus.MustNewConstMetric(tempest.Pressure, prometheus.GaugeValue, ob[6], r.SerialNumber),
 			prometheus.MustNewConstMetric(tempest.Temperature, prometheus.GaugeValue, ob[7], r.SerialNumber, "air"),
 			prometheus.MustNewConstMetric(tempest.Temperature, prometheus.GaugeValue, wetBulb, r.SerialNumber, "wetbulb"),
 			prometheus.MustNewConstMetric(tempest.Humidity, prometheus.GaugeValue, ob[8], r.SerialNumber),
@@ -176,7 +176,7 @@ func (r TempestObservationReport) Metrics() []prometheus.Metric {
 		}
 		if len(ob) >= 18 {
 			metrics = append(metrics,
-				prometheus.MustNewConstMetric(tempest.ReportInterval, prometheus.GaugeValue, ob[17]*60, r.SerialNumber),
+				prometheus.MustNewConstMetric(tempest.ReportInterval, prometheus.GaugeValue, ob[17], r.SerialNumber),
 			)
 		}
 
