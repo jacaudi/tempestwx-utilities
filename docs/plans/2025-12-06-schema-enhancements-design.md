@@ -1,0 +1,408 @@
+# Schema Enhancements: Missing Fields + UUIDv7 Migration
+
+**Date**: 2025-12-06
+**Status**: Approved
+**Author**: Claude (with jacaudi)
+
+## Overview
+
+Enhance the PostgreSQL schema to capture complete observation data and migrate from BIGSERIAL to UUIDv7 primary keys while preserving existing data.
+
+## Objectives
+
+1. **Data Completeness**: Add missing fields from Tempest UDP API (wind_sample_interval, precip_type)
+2. **Modern IDs**: Migrate from BIGSERIAL to UUIDv7 for all primary keys
+3. **Zero Data Loss**: Preserve all existing records during migration
+4. **No Extensions**: Generate UUIDs in Go code, avoid PostgreSQL extension dependencies
+
+## Background
+
+### Current State
+- Tables use `BIGSERIAL` for auto-incrementing primary keys
+- Missing fields from `obs_st` UDP messages:
+  - Field 5: `wind_sample_interval` (seconds)
+  - Field 13: `precip_type` (0=none, 1=rain, 2=hail, 3=rain+hail)
+- UUID support would enable better distributed system compatibility
+
+### Constraints
+- Must preserve existing production data
+- Minimize application downtime
+- Avoid PostgreSQL extensions (keep deployment simple)
+
+## Design Decisions
+
+### UUID Generation Strategy
+**Decision**: Generate UUIDv7 in Go code using `github.com/google/uuid`
+
+**Rationale**:
+- No PostgreSQL extension dependencies (works on any PG 9.4+)
+- Full control over UUID generation in application
+- Testable and mockable
+- Consistent with Go idioms
+
+**Alternatives Considered**:
+- ❌ PostgreSQL `pg_uuidv7` extension - adds deployment complexity
+- ❌ Database default `gen_random_uuid()` - loses time-ordering benefit of v7
+- ✅ **Go-generated UUIDv7** - chosen for simplicity and control
+
+### Migration Approach
+**Decision**: Two-phase migration (add columns → swap keys)
+
+**Rationale**:
+- Backward compatible during transition
+- Can backfill UUIDs while app is running
+- Rollback possible at each step
+- Minimal downtime
+
+## Architecture
+
+### Schema Changes
+
+#### Phase 1: Add Missing Fields (Backward Compatible)
+```sql
+ALTER TABLE tempest_observations
+  ADD COLUMN wind_sample_interval DOUBLE PRECISION,
+  ADD COLUMN precip_type INTEGER;
+```
+
+#### Phase 2: UUID Migration
+```sql
+-- Step 1: Add UUID column (nullable initially)
+ALTER TABLE tempest_observations
+  ADD COLUMN new_id UUID;
+
+-- Step 2: Backfill UUIDs for existing rows
+UPDATE tempest_observations SET new_id = gen_random_uuid() WHERE new_id IS NULL;
+
+-- Step 3: Make UUID non-null and primary key
+ALTER TABLE tempest_observations
+  ALTER COLUMN new_id SET NOT NULL,
+  DROP CONSTRAINT tempest_observations_pkey,
+  ADD PRIMARY KEY (new_id),
+  DROP COLUMN id,
+  RENAME COLUMN new_id TO id;
+```
+
+(Repeat for all tables: rapid_wind, hub_status, events)
+
+### Go Code Changes
+
+#### Dependencies
+```go
+import "github.com/google/uuid"
+```
+
+#### Row Structs
+```go
+type observationRow struct {
+    id                   uuid.UUID  // Changed from not included
+    serialNumber         string
+    timestamp            time.Time
+    windLull             float64
+    windAvg              float64
+    windGust             float64
+    windDirection        float64
+    windSampleInterval   *float64   // NEW: field 5
+    pressure             float64
+    tempAir              float64
+    tempWetbulb          float64
+    humidity             float64
+    illuminance          float64
+    uvIndex              float64
+    irradiance           float64
+    rainRate             float64
+    precipType           *int       // NEW: field 13
+    lightningDistance    *float64
+    lightningStrikeCount *float64
+    battery              *float64
+    reportInterval       *float64
+}
+```
+
+#### UUID Generation
+```go
+func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempestudp.TempestObservationReport) error {
+    for _, ob := range r.Obs {
+        // ... field extraction ...
+
+        row := observationRow{
+            id:           uuid.Must(uuid.NewV7()),  // Generate UUIDv7
+            serialNumber: r.SerialNumber,
+            timestamp:    ts,
+            // ... populate all fields ...
+        }
+
+        // ... send to batch channel ...
+    }
+}
+```
+
+#### INSERT Statements
+```go
+b.Queue(`
+    INSERT INTO tempest_observations (
+        id, serial_number, timestamp,
+        wind_lull, wind_avg, wind_gust, wind_direction, wind_sample_interval,
+        pressure, temp_air, temp_wetbulb, humidity,
+        illuminance, uv_index, irradiance, rain_rate, precip_type,
+        lightning_distance, lightning_strike_count,
+        battery, report_interval
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+    ON CONFLICT (serial_number, timestamp) DO NOTHING
+`, row.id, row.serialNumber, row.timestamp, ...)
+```
+
+## Data Model
+
+### Updated Field Mappings
+
+#### tempest_observations
+| Column | UDP Field | Unit | Type | Notes |
+|--------|-----------|------|------|-------|
+| id | N/A | N/A | UUID | **NEW**: UUIDv7 generated in Go |
+| serial_number | N/A | text | TEXT | Device serial |
+| timestamp | 0 | seconds | TIMESTAMPTZ | Unix epoch UTC |
+| wind_lull | 1 | m/s | DOUBLE PRECISION | |
+| wind_avg | 2 | m/s | DOUBLE PRECISION | |
+| wind_gust | 3 | m/s | DOUBLE PRECISION | |
+| wind_direction | 4 | degrees | DOUBLE PRECISION | |
+| **wind_sample_interval** | **5** | **seconds** | **DOUBLE PRECISION** | **NEW** |
+| pressure | 6 | Pascals | DOUBLE PRECISION | Converted from mb |
+| temp_air | 7 | °C | DOUBLE PRECISION | |
+| temp_wetbulb | calculated | °C | DOUBLE PRECISION | |
+| humidity | 8 | % | DOUBLE PRECISION | |
+| illuminance | 9 | lux | DOUBLE PRECISION | |
+| uv_index | 10 | index | DOUBLE PRECISION | |
+| irradiance | 11 | W/m² | DOUBLE PRECISION | |
+| rain_rate | 12 | mm | DOUBLE PRECISION | |
+| **precip_type** | **13** | **enum** | **INTEGER** | **NEW: 0=none, 1=rain, 2=hail, 3=both** |
+| lightning_distance | 14 | km | DOUBLE PRECISION | |
+| lightning_strike_count | 15 | count | DOUBLE PRECISION | |
+| battery | 16 | volts | DOUBLE PRECISION | |
+| report_interval | 17 | seconds | DOUBLE PRECISION | Converted from minutes |
+
+#### tempest_rapid_wind, tempest_hub_status, tempest_events
+All tables get same UUID migration (BIGSERIAL → UUID with Go-generated UUIDv7).
+
+## Complete Units Reference Table
+
+### Stored Data Units by Table
+
+#### tempest_observations
+| Field | Unit | PostgreSQL Storage | Conversion Notes |
+|-------|------|-------------------|------------------|
+| id | N/A | UUID | UUIDv7 generated in Go |
+| serial_number | text | TEXT | e.g., "ST-00019709" |
+| timestamp | seconds (Unix epoch) | TIMESTAMPTZ | UTC timezone |
+| wind_lull | m/s (meters/second) | DOUBLE PRECISION | No conversion |
+| wind_avg | m/s (meters/second) | DOUBLE PRECISION | No conversion |
+| wind_gust | m/s (meters/second) | DOUBLE PRECISION | No conversion |
+| wind_direction | degrees (0-360°) | DOUBLE PRECISION | No conversion |
+| wind_sample_interval | seconds | DOUBLE PRECISION | No conversion |
+| pressure | Pascals (Pa) | DOUBLE PRECISION | **Converted from mb × 100** |
+| temp_air | °C (Celsius) | DOUBLE PRECISION | No conversion |
+| temp_wetbulb | °C (Celsius) | DOUBLE PRECISION | Calculated from temp/RH/pressure |
+| humidity | % (0-100) | DOUBLE PRECISION | No conversion |
+| illuminance | lux | DOUBLE PRECISION | No conversion |
+| uv_index | index (0-16+) | DOUBLE PRECISION | No conversion |
+| irradiance | W/m² (watts/meter²) | DOUBLE PRECISION | No conversion |
+| rain_rate | mm (millimeters) | DOUBLE PRECISION | No conversion |
+| precip_type | enum (0-3) | INTEGER | 0=none, 1=rain, 2=hail, 3=rain+hail |
+| lightning_distance | km (kilometers) | DOUBLE PRECISION | No conversion |
+| lightning_strike_count | count | DOUBLE PRECISION | No conversion |
+| battery | volts | DOUBLE PRECISION | No conversion |
+| report_interval | seconds | DOUBLE PRECISION | **Converted from minutes × 60** |
+
+#### tempest_rapid_wind
+| Field | Unit | PostgreSQL Storage | Conversion Notes |
+|-------|------|-------------------|------------------|
+| id | N/A | UUID | UUIDv7 generated in Go |
+| serial_number | text | TEXT | Device serial |
+| timestamp | seconds (Unix epoch) | TIMESTAMPTZ | UTC timezone |
+| wind_speed | m/s (meters/second) | DOUBLE PRECISION | No conversion |
+| wind_direction | degrees (0-360°) | DOUBLE PRECISION | No conversion |
+
+#### tempest_hub_status
+| Field | Unit | PostgreSQL Storage | Conversion Notes |
+|-------|------|-------------------|------------------|
+| id | N/A | UUID | UUIDv7 generated in Go |
+| serial_number | text | TEXT | Hub serial (HB-XXXXXXXX) |
+| timestamp | seconds (Unix epoch) | TIMESTAMPTZ | UTC timezone |
+| uptime | seconds | DOUBLE PRECISION | No conversion |
+| rssi | dBm (decibel-milliwatts) | DOUBLE PRECISION | WiFi signal strength |
+| reboot_count | count | DOUBLE PRECISION | From radio_stats[1] |
+| bus_errors | count | DOUBLE PRECISION | From radio_stats[2], I2C errors |
+
+#### tempest_events
+| Field | Unit | PostgreSQL Storage | Conversion Notes |
+|-------|------|-------------------|------------------|
+| id | N/A | UUID | UUIDv7 generated in Go |
+| serial_number | text | TEXT | Device serial |
+| timestamp | seconds (Unix epoch) | TIMESTAMPTZ | Event occurrence time |
+| event_type | text | TEXT | "rain_start" or "lightning_strike" |
+| distance_km | km (kilometers) | DOUBLE PRECISION | Lightning only, NULL for rain |
+| energy | (unspecified) | DOUBLE PRECISION | Lightning only, NULL for rain |
+
+### Unit Conversions Applied
+
+**Conversions performed by Go code before storage:**
+1. **Pressure**: UDP sends `mb` (millibars) → Store as `Pa` (Pascals) by multiplying × 100
+2. **Report Interval**: UDP sends `minutes` → Store as `seconds` by multiplying × 60
+3. **Wet Bulb Temperature**: Calculated using psychrometric formula from air temp, humidity, and pressure
+
+**No conversion needed:**
+- Wind measurements (already in m/s)
+- Temperatures (already in °C)
+- Humidity (already in %)
+- All other fields stored as received
+
+## Migration Plan
+
+### Prerequisites
+1. Database backup
+2. Add `github.com/google/uuid` to go.mod
+3. Create migration SQL scripts
+
+### Phase 1: Add Missing Fields (Low Risk)
+**Estimated Time**: 1 minute
+**Downtime**: None (backward compatible)
+
+```sql
+-- migrations/001_add_missing_fields.sql
+ALTER TABLE tempest_observations
+  ADD COLUMN IF NOT EXISTS wind_sample_interval DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS precip_type INTEGER;
+```
+
+**Deploy**: Run migration, deploy updated Go code (extracts new fields)
+
+**Rollback**: Go code handles NULL values gracefully
+
+### Phase 2: UUID Migration (Coordinated)
+**Estimated Time**: 5-10 minutes (depends on table size)
+**Downtime**: Brief (during primary key swap)
+
+#### Step 1: Add UUID Column
+```sql
+-- migrations/002_add_uuid_column.sql
+ALTER TABLE tempest_observations ADD COLUMN new_id UUID;
+ALTER TABLE tempest_rapid_wind ADD COLUMN new_id UUID;
+ALTER TABLE tempest_hub_status ADD COLUMN new_id UUID;
+ALTER TABLE tempest_events ADD COLUMN new_id UUID;
+```
+
+#### Step 2: Deploy Updated Go Code
+- Go code generates UUIDs and writes to `new_id` column
+- Existing rows still have NULL `new_id` (handled gracefully)
+
+#### Step 3: Backfill Existing Rows
+```sql
+-- migrations/003_backfill_uuids.sql
+UPDATE tempest_observations SET new_id = gen_random_uuid() WHERE new_id IS NULL;
+UPDATE tempest_rapid_wind SET new_id = gen_random_uuid() WHERE new_id IS NULL;
+UPDATE tempest_hub_status SET new_id = gen_random_uuid() WHERE new_id IS NULL;
+UPDATE tempest_events SET new_id = gen_random_uuid() WHERE new_id IS NULL;
+```
+
+#### Step 4: Swap Primary Keys (Brief Downtime)
+```sql
+-- migrations/004_swap_primary_keys.sql
+BEGIN;
+
+-- tempest_observations
+ALTER TABLE tempest_observations
+  ALTER COLUMN new_id SET NOT NULL,
+  DROP CONSTRAINT tempest_observations_pkey,
+  ADD PRIMARY KEY (new_id),
+  DROP COLUMN id,
+  RENAME COLUMN new_id TO id;
+
+-- tempest_rapid_wind
+ALTER TABLE tempest_rapid_wind
+  ALTER COLUMN new_id SET NOT NULL,
+  DROP CONSTRAINT tempest_rapid_wind_pkey,
+  ADD PRIMARY KEY (new_id),
+  DROP COLUMN id,
+  RENAME COLUMN new_id TO id;
+
+-- tempest_hub_status
+ALTER TABLE tempest_hub_status
+  ALTER COLUMN new_id SET NOT NULL,
+  DROP CONSTRAINT tempest_hub_status_pkey,
+  ADD PRIMARY KEY (new_id),
+  DROP COLUMN id,
+  RENAME COLUMN new_id TO id;
+
+-- tempest_events
+ALTER TABLE tempest_events
+  ALTER COLUMN new_id SET NOT NULL,
+  DROP CONSTRAINT tempest_events_pkey,
+  ADD PRIMARY KEY (new_id),
+  DROP COLUMN id,
+  RENAME COLUMN new_id TO id;
+
+COMMIT;
+```
+
+**Downtime Window**: Stop application → Run migration → Restart application
+
+**Rollback**: Restore from backup (complex after this point)
+
+### Phase 3: Cleanup Updated Schema Constants
+Update `internal/postgres/schema.go` to reflect final state:
+```sql
+CREATE TABLE IF NOT EXISTS tempest_observations (
+    id UUID PRIMARY KEY,  -- Changed from BIGSERIAL
+    serial_number TEXT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    -- ... all fields including new ones ...
+)
+```
+
+## Testing Strategy
+
+### Unit Tests
+- Test UUID generation in row creation
+- Test INSERT statements include id field
+- Test field extraction for wind_sample_interval and precip_type
+
+### Integration Tests
+- Verify schema creation with new columns
+- Test data insertion with UUIDs
+- Verify UNIQUE constraint still works on (serial_number, timestamp)
+
+### Migration Testing
+1. Create test database with sample data
+2. Run Phase 1 migration (add fields)
+3. Run Phase 2 migration (UUID transition)
+4. Verify all data preserved
+5. Verify new inserts work correctly
+
+## Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| UUID generation failure | Insert failures | Use `uuid.Must()` to panic on error, catch at application level |
+| Long migration time | Extended downtime | Test on copy of production data to estimate time |
+| Backfill UUIDs too slow | Downtime extends | Run backfill during low-traffic period, add indexes after |
+| Primary key swap fails | Application down | Have backup ready, test migration script thoroughly |
+
+## Success Criteria
+
+- ✅ All existing data preserved with no loss
+- ✅ New fields (`wind_sample_interval`, `precip_type`) captured from UDP messages
+- ✅ All primary keys use UUIDv7 generated in Go
+- ✅ Application continues writing data without errors
+- ✅ UNIQUE constraints on (serial_number, timestamp) still enforced
+- ✅ No PostgreSQL extensions required
+
+## Future Considerations
+
+### Out of Scope (Not Included)
+- Legacy device support (`obs_air`, `obs_sky`) - only Tempest devices supported
+- Device status storage - currently parsed but not persisted (by design)
+
+### Potential Enhancements
+- Add indexes on new fields if frequently queried
+- Consider partitioning large tables by timestamp
+- Add precipitation type enum/check constraint for data validation
