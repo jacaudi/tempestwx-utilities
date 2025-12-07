@@ -88,6 +88,13 @@ The application switches modes based on presence of `TOKEN` environment variable
 
 The exporter can write metrics to PostgreSQL in addition to (or instead of) Prometheus.
 
+### Data Storage
+
+**All UDP values stored as raw** - no unit conversions:
+- Pressure: `mb` (millibars) from field 6
+- Report Interval: `minutes` from field 17
+- All other fields: stored exactly as received
+
 ### Configuration
 
 **Option 1: Full connection string**
@@ -115,10 +122,12 @@ POSTGRES_MAX_RETRIES=3          # default: 3
 ### Database Schema
 
 Four typed tables are automatically created on startup:
-- `tempest_observations` - Main weather data (~1/minute)
+- `tempest_observations` - Main weather data (~1/minute) with UUID primary keys
 - `tempest_rapid_wind` - High-frequency wind readings (~3 seconds)
 - `tempest_hub_status` - Device health metrics
 - `tempest_events` - Rain start and lightning strike events
+
+All tables use UUIDv7 primary keys (generated in Go, no PostgreSQL extensions required).
 
 ### Operational Modes
 

@@ -32,7 +32,7 @@ func CreateSchema(ctx context.Context, pool *pgxpool.Pool) error {
 
 const createObservationsTable = `
 CREATE TABLE IF NOT EXISTS tempest_observations (
-    id            BIGSERIAL PRIMARY KEY,
+    id            UUID PRIMARY KEY,
     serial_number TEXT NOT NULL,
     timestamp     TIMESTAMPTZ NOT NULL,
 
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tempest_observations (
     wind_avg      DOUBLE PRECISION,
     wind_gust     DOUBLE PRECISION,
     wind_direction DOUBLE PRECISION,
+    wind_sample_interval DOUBLE PRECISION,
 
     pressure      DOUBLE PRECISION,
     temp_air      DOUBLE PRECISION,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS tempest_observations (
     irradiance    DOUBLE PRECISION,
 
     rain_rate     DOUBLE PRECISION,
+    precip_type   INTEGER,
 
     lightning_distance DOUBLE PRECISION,
     lightning_strike_count DOUBLE PRECISION,
@@ -64,7 +66,7 @@ CREATE TABLE IF NOT EXISTS tempest_observations (
 
 const createRapidWindTable = `
 CREATE TABLE IF NOT EXISTS tempest_rapid_wind (
-    id            BIGSERIAL PRIMARY KEY,
+    id            UUID PRIMARY KEY,
     serial_number TEXT NOT NULL,
     timestamp     TIMESTAMPTZ NOT NULL,
     wind_speed    DOUBLE PRECISION,
@@ -76,7 +78,7 @@ CREATE TABLE IF NOT EXISTS tempest_rapid_wind (
 
 const createHubStatusTable = `
 CREATE TABLE IF NOT EXISTS tempest_hub_status (
-    id            BIGSERIAL PRIMARY KEY,
+    id            UUID PRIMARY KEY,
     serial_number TEXT NOT NULL,
     timestamp     TIMESTAMPTZ NOT NULL,
     uptime        DOUBLE PRECISION,
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS tempest_hub_status (
 
 const createEventsTable = `
 CREATE TABLE IF NOT EXISTS tempest_events (
-    id            BIGSERIAL PRIMARY KEY,
+    id            UUID PRIMARY KEY,
     serial_number TEXT NOT NULL,
     timestamp     TIMESTAMPTZ NOT NULL,
     event_type    TEXT NOT NULL,

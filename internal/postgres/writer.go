@@ -11,6 +11,7 @@ import (
 
 	"tempestwx-utilities/internal/tempestudp"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,27 +21,31 @@ import (
 
 // Row types for each table
 type observationRow struct {
-	serialNumber        string
-	timestamp           time.Time
-	windLull            float64
-	windAvg             float64
-	windGust            float64
-	windDirection       float64
-	pressure            float64
-	tempAir             float64
-	tempWetbulb         float64
-	humidity            float64
-	illuminance         float64
-	uvIndex             float64
-	irradiance          float64
-	rainRate            float64
-	lightningDistance   *float64
+	id                   uuid.UUID
+	serialNumber         string
+	timestamp            time.Time
+	windLull             float64
+	windAvg              float64
+	windGust             float64
+	windDirection        float64
+	windSampleInterval   *float64
+	pressure             float64
+	tempAir              float64
+	tempWetbulb          float64
+	humidity             float64
+	illuminance          float64
+	uvIndex              float64
+	irradiance           float64
+	rainRate             float64
+	precipType           *int
+	lightningDistance    *float64
 	lightningStrikeCount *float64
-	battery             *float64
-	reportInterval      *float64
+	battery              *float64
+	reportInterval       *float64
 }
 
 type rapidWindRow struct {
+	id            uuid.UUID
 	serialNumber  string
 	timestamp     time.Time
 	windSpeed     float64
@@ -48,6 +53,7 @@ type rapidWindRow struct {
 }
 
 type hubStatusRow struct {
+	id           uuid.UUID
 	serialNumber string
 	timestamp    time.Time
 	uptime       float64
@@ -57,6 +63,7 @@ type hubStatusRow struct {
 }
 
 type eventRow struct {
+	id           uuid.UUID
 	serialNumber string
 	timestamp    time.Time
 	eventType    string
@@ -177,16 +184,18 @@ func (w *PostgresWriter) insertObservations(batch []observationRow) error {
 	for _, row := range batch {
 		b.Queue(`
 			INSERT INTO tempest_observations (
-				serial_number, timestamp, wind_lull, wind_avg, wind_gust,
-				wind_direction, pressure, temp_air, temp_wetbulb, humidity,
-				illuminance, uv_index, irradiance, rain_rate,
+				id, serial_number, timestamp,
+				wind_lull, wind_avg, wind_gust, wind_direction, wind_sample_interval,
+				pressure, temp_air, temp_wetbulb, humidity,
+				illuminance, uv_index, irradiance, rain_rate, precip_type,
 				lightning_distance, lightning_strike_count,
 				battery, report_interval
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 			ON CONFLICT (serial_number, timestamp) DO NOTHING
-		`, row.serialNumber, row.timestamp, row.windLull, row.windAvg, row.windGust,
-			row.windDirection, row.pressure, row.tempAir, row.tempWetbulb, row.humidity,
-			row.illuminance, row.uvIndex, row.irradiance, row.rainRate,
+		`, row.id, row.serialNumber, row.timestamp,
+			row.windLull, row.windAvg, row.windGust, row.windDirection, row.windSampleInterval,
+			row.pressure, row.tempAir, row.tempWetbulb, row.humidity,
+			row.illuminance, row.uvIndex, row.irradiance, row.rainRate, row.precipType,
 			row.lightningDistance, row.lightningStrikeCount,
 			row.battery, row.reportInterval)
 	}
@@ -266,10 +275,10 @@ func (w *PostgresWriter) insertRapidWind(batch []rapidWindRow) error {
 	for _, row := range batch {
 		b.Queue(`
 			INSERT INTO tempest_rapid_wind (
-				serial_number, timestamp, wind_speed, wind_direction
-			) VALUES ($1, $2, $3, $4)
+				id, serial_number, timestamp, wind_speed, wind_direction
+			) VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (serial_number, timestamp) DO NOTHING
-		`, row.serialNumber, row.timestamp, row.windSpeed, row.windDirection)
+		`, row.id, row.serialNumber, row.timestamp, row.windSpeed, row.windDirection)
 	}
 
 	br := w.pool.SendBatch(ctx, b)
@@ -342,10 +351,10 @@ func (w *PostgresWriter) insertHubStatus(batch []hubStatusRow) error {
 	for _, row := range batch {
 		b.Queue(`
 			INSERT INTO tempest_hub_status (
-				serial_number, timestamp, uptime, rssi, reboot_count, bus_errors
-			) VALUES ($1, $2, $3, $4, $5, $6)
+				id, serial_number, timestamp, uptime, rssi, reboot_count, bus_errors
+			) VALUES ($1, $2, $3, $4, $5, $6, $7)
 			ON CONFLICT (serial_number, timestamp) DO NOTHING
-		`, row.serialNumber, row.timestamp, row.uptime, row.rssi, row.rebootCount, row.busErrors)
+		`, row.id, row.serialNumber, row.timestamp, row.uptime, row.rssi, row.rebootCount, row.busErrors)
 	}
 
 	br := w.pool.SendBatch(ctx, b)
@@ -398,10 +407,10 @@ func (w *PostgresWriter) insertEvents(batch []eventRow) error {
 	for _, row := range batch {
 		b.Queue(`
 			INSERT INTO tempest_events (
-				serial_number, timestamp, event_type, distance_km, energy
-			) VALUES ($1, $2, $3, $4, $5)
+				id, serial_number, timestamp, event_type, distance_km, energy
+			) VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (serial_number, timestamp, event_type) DO NOTHING
-		`, row.serialNumber, row.timestamp, row.eventType, row.distanceKm, row.energy)
+		`, row.id, row.serialNumber, row.timestamp, row.eventType, row.distanceKm, row.energy)
 	}
 
 	br := w.pool.SendBatch(ctx, b)
@@ -453,13 +462,14 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 		wetBulb := tempestudp.WetBulbTemperatureC(ob[7], ob[8], ob[6])
 
 		row := observationRow{
+			id:            uuid.Must(uuid.NewV7()), // Generate UUIDv7
 			serialNumber:  r.SerialNumber,
 			timestamp:     ts,
 			windLull:      ob[1],
 			windAvg:       ob[2],
 			windGust:      ob[3],
 			windDirection: ob[4],
-			pressure:      ob[6] * 100, // MB to Pascals
+			pressure:      ob[6], // Raw mb value (no conversion)
 			tempAir:       ob[7],
 			tempWetbulb:   wetBulb,
 			humidity:      ob[8],
@@ -467,6 +477,18 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 			uvIndex:       ob[10],
 			irradiance:    ob[11],
 			rainRate:      ob[12],
+		}
+
+		// Field 5: wind_sample_interval (seconds)
+		if len(ob) >= 6 {
+			interval := ob[5]
+			row.windSampleInterval = &interval
+		}
+
+		// Field 13: precip_type (0=none, 1=rain, 2=hail, 3=rain+hail)
+		if len(ob) >= 14 {
+			precipType := int(ob[13])
+			row.precipType = &precipType
 		}
 
 		// Lightning fields (14 and 15)
@@ -477,13 +499,15 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 			row.lightningStrikeCount = &count
 		}
 
-		// Optional fields
+		// Field 16: battery
 		if len(ob) >= 17 {
 			battery := ob[16]
 			row.battery = &battery
 		}
+
+		// Field 17: report_interval (minutes - raw value)
 		if len(ob) >= 18 {
-			interval := ob[17] * 60 // minutes to seconds
+			interval := ob[17] // Raw minutes value (no conversion)
 			row.reportInterval = &interval
 		}
 
@@ -508,6 +532,7 @@ func (w *PostgresWriter) handleRapidWindReport(ctx context.Context, r *tempestud
 	ts := time.Unix(int64(r.Ob[0]), 0)
 
 	row := rapidWindRow{
+		id:            uuid.Must(uuid.NewV7()), // Generate UUIDv7
 		serialNumber:  r.SerialNumber,
 		timestamp:     ts,
 		windSpeed:     r.Ob[1],
@@ -534,6 +559,7 @@ func (w *PostgresWriter) handleHubStatusReport(ctx context.Context, r *tempestud
 	ts := time.Unix(r.Timestamp, 0)
 
 	row := hubStatusRow{
+		id:           uuid.Must(uuid.NewV7()), // Generate UUIDv7
 		serialNumber: r.SerialNumber,
 		timestamp:    ts,
 		uptime:       r.Uptime,
@@ -562,6 +588,7 @@ func (w *PostgresWriter) handleRainStartReport(ctx context.Context, r *tempestud
 	ts := time.Unix(int64(r.Evt[0]), 0)
 
 	row := eventRow{
+		id:           uuid.Must(uuid.NewV7()), // Generate UUIDv7
 		serialNumber: r.SerialNumber,
 		timestamp:    ts,
 		eventType:    "rain_start",
@@ -591,6 +618,7 @@ func (w *PostgresWriter) handleLightningStrikeReport(ctx context.Context, r *tem
 	energy := r.Evt[2]
 
 	row := eventRow{
+		id:           uuid.Must(uuid.NewV7()), // Generate UUIDv7
 		serialNumber: r.SerialNumber,
 		timestamp:    ts,
 		eventType:    "lightning_strike",
@@ -648,6 +676,7 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 		obs, exists := observations[key]
 		if !exists {
 			obs = &observationRow{
+				id:           uuid.Must(uuid.NewV7()),
 				serialNumber: serialNumber,
 				timestamp:    ts,
 			}
