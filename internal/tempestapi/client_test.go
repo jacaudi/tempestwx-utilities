@@ -2,16 +2,35 @@ package tempestapi
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
+
+// mockRoundTripper allows us to mock HTTP responses without running a server
+type mockRoundTripper struct {
+	response *http.Response
+	err      error
+}
+
+func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.response, nil
+}
+
+// Helper to create a mock HTTP response
+func mockResponse(statusCode int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: statusCode,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
+}
 
 func TestNewClient(t *testing.T) {
 	token := "test-token-123"
@@ -22,9 +41,12 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
-func TestListStations_Success(t *testing.T) {
-	// Mock server response
-	mockResponse := `{
+// ============================================================================
+// ListStations Tests
+// ============================================================================
+
+func TestListStations_Success_SingleStation(t *testing.T) {
+	mockBody := `{
 		"stations": [
 			{
 				"name": "Test Station",
@@ -45,28 +67,16 @@ func TestListStations_Success(t *testing.T) {
 		}
 	}`
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify the request
-		if r.Method != http.MethodGet {
-			t.Errorf("Expected GET request, got %s", r.Method)
-		}
-		if !strings.Contains(r.URL.String(), "token=test-token") {
-			t.Errorf("Expected token parameter in URL: %s", r.URL.String())
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(mockResponse))
-	}))
-	defer server.Close()
-
-	// Note: This test uses a helper function to test the parsing logic
-	// In production, you'd want to refactor the client for better testability
+	// Replace http.DefaultClient temporarily
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
 
 	client := NewClient("test-token")
+	stations, err := client.ListStations(context.Background())
 
-	// Test with a mock that uses the test server
-	stations, err := testListStations(client, server.URL, context.Background())
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -95,19 +105,30 @@ func TestListStations_Success(t *testing.T) {
 	}
 }
 
-func TestListStations_NoSTDevice(t *testing.T) {
-	// Mock response with no ST device
-	mockResponse := `{
+func TestListStations_Success_MultipleStations(t *testing.T) {
+	mockBody := `{
 		"stations": [
 			{
-				"name": "Test Station",
-				"station_id": 12345,
+				"name": "Station One",
+				"station_id": 11111,
 				"created_epoch": 1609459200,
 				"devices": [
 					{
-						"device_id": 67890,
-						"device_type": "HB",
-						"serial_number": "HB-00012345"
+						"device_id": 10001,
+						"device_type": "ST",
+						"serial_number": "ST-00011111"
+					}
+				]
+			},
+			{
+				"name": "Station Two",
+				"station_id": 22222,
+				"created_epoch": 1609545600,
+				"devices": [
+					{
+						"device_id": 20002,
+						"device_type": "ST",
+						"serial_number": "ST-00022222"
 					}
 				]
 			}
@@ -118,15 +139,130 @@ func TestListStations_NoSTDevice(t *testing.T) {
 		}
 	}`
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(mockResponse))
-	}))
-	defer server.Close()
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
 
 	client := NewClient("test-token")
-	stations, err := testListStations(client, server.URL, context.Background())
+	stations, err := client.ListStations(context.Background())
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if len(stations) != 2 {
+		t.Fatalf("Expected 2 stations, got %d", len(stations))
+	}
+
+	// Verify first station
+	if stations[0].Name != "Station One" {
+		t.Errorf("Expected first station name 'Station One', got %s", stations[0].Name)
+	}
+	if stations[0].StationID != 11111 {
+		t.Errorf("Expected first station ID 11111, got %d", stations[0].StationID)
+	}
+
+	// Verify second station
+	if stations[1].Name != "Station Two" {
+		t.Errorf("Expected second station name 'Station Two', got %s", stations[1].Name)
+	}
+	if stations[1].StationID != 22222 {
+		t.Errorf("Expected second station ID 22222, got %d", stations[1].StationID)
+	}
+}
+
+func TestListStations_Success_MultipleDevicesPerStation(t *testing.T) {
+	mockBody := `{
+		"stations": [
+			{
+				"name": "Mixed Device Station",
+				"station_id": 12345,
+				"created_epoch": 1609459200,
+				"devices": [
+					{
+						"device_id": 11111,
+						"device_type": "HB",
+						"serial_number": "HB-00011111"
+					},
+					{
+						"device_id": 67890,
+						"device_type": "ST",
+						"serial_number": "ST-00012345"
+					},
+					{
+						"device_id": 22222,
+						"device_type": "AR",
+						"serial_number": "AR-00022222"
+					}
+				]
+			}
+		],
+		"status": {
+			"status_code": 0,
+			"status_message": "SUCCESS"
+		}
+	}`
+
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	stations, err := client.ListStations(context.Background())
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if len(stations) != 1 {
+		t.Fatalf("Expected 1 station, got %d", len(stations))
+	}
+
+	// Should pick the ST device, not HB or AR
+	station := stations[0]
+	if station.deviceID != 67890 {
+		t.Errorf("Expected device ID 67890 (ST device), got %d", station.deviceID)
+	}
+	if station.serialNumber != "ST-00012345" {
+		t.Errorf("Expected serial number 'ST-00012345', got %s", station.serialNumber)
+	}
+}
+
+func TestListStations_NoSTDevice(t *testing.T) {
+	mockBody := `{
+		"stations": [
+			{
+				"name": "Hub Only Station",
+				"station_id": 12345,
+				"created_epoch": 1609459200,
+				"devices": [
+					{
+						"device_id": 11111,
+						"device_type": "HB",
+						"serial_number": "HB-00011111"
+					}
+				]
+			}
+		],
+		"status": {
+			"status_code": 0,
+			"status_message": "SUCCESS"
+		}
+	}`
+
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	stations, err := client.ListStations(context.Background())
+
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -137,64 +273,165 @@ func TestListStations_NoSTDevice(t *testing.T) {
 	}
 }
 
-func TestListStations_HTTPError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Internal Server Error"))
-	}))
-	defer server.Close()
+func TestListStations_EmptyStations(t *testing.T) {
+	mockBody := `{
+		"stations": [],
+		"status": {
+			"status_code": 0,
+			"status_message": "SUCCESS"
+		}
+	}`
+
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
 
 	client := NewClient("test-token")
-	_, err := testListStations(client, server.URL, context.Background())
-	if err == nil {
-		t.Error("Expected error for HTTP 500, got nil")
+	stations, err := client.ListStations(context.Background())
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if len(stations) != 0 {
+		t.Errorf("Expected 0 stations, got %d", len(stations))
+	}
+}
+
+func TestListStations_MixedValidAndInvalid(t *testing.T) {
+	mockBody := `{
+		"stations": [
+			{
+				"name": "No ST Device",
+				"station_id": 11111,
+				"created_epoch": 1609459200,
+				"devices": [
+					{
+						"device_id": 99999,
+						"device_type": "HB",
+						"serial_number": "HB-00099999"
+					}
+				]
+			},
+			{
+				"name": "Valid Station",
+				"station_id": 22222,
+				"created_epoch": 1609545600,
+				"devices": [
+					{
+						"device_id": 67890,
+						"device_type": "ST",
+						"serial_number": "ST-00022222"
+					}
+				]
+			},
+			{
+				"name": "Empty Devices",
+				"station_id": 33333,
+				"created_epoch": 1609632000,
+				"devices": []
+			}
+		],
+		"status": {
+			"status_code": 0,
+			"status_message": "SUCCESS"
+		}
+	}`
+
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	stations, err := client.ListStations(context.Background())
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Should only return the valid station
+	if len(stations) != 1 {
+		t.Fatalf("Expected 1 station, got %d", len(stations))
+	}
+
+	if stations[0].Name != "Valid Station" {
+		t.Errorf("Expected 'Valid Station', got %s", stations[0].Name)
 	}
 }
 
 func TestListStations_InvalidJSON(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("invalid json"))
-	}))
-	defer server.Close()
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, "invalid json{{{"),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
 
 	client := NewClient("test-token")
-	_, err := testListStations(client, server.URL, context.Background())
+	_, err := client.ListStations(context.Background())
+
 	if err == nil {
 		t.Error("Expected error for invalid JSON, got nil")
 	}
 }
 
+func TestListStations_HTTPError(t *testing.T) {
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		err: errors.New("network error"),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	_, err := client.ListStations(context.Background())
+
+	if err == nil {
+		t.Error("Expected network error, got nil")
+	}
+}
+
+func TestListStations_ContextCancellation(t *testing.T) {
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		err: context.Canceled,
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := client.ListStations(ctx)
+
+	if err == nil {
+		t.Error("Expected context cancellation error, got nil")
+	}
+}
+
+// ============================================================================
+// GetObservations Tests
+// ============================================================================
+
 func TestGetObservations_Success(t *testing.T) {
-	// Mock observation response - simplified ST observation
-	mockResponse := `{
+	// Valid obs_st response with proper data structure
+	mockBody := `{
 		"type": "obs_st",
-		"device_id": 67890,
-		"obs": [[
-			1609459200,
-			0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0
-		]]
+		"serial_number": "ORIGINAL-SERIAL",
+		"hub_sn": "HB-00001234",
+		"obs": [
+			[1609459200, 0.5, 1.2, 2.3, 180, 3, 1013.25, 20.5, 65, 50000, 3, 500, 0, 0, 0, 0, 2.6, 1]
+		],
+		"firmware_revision": 143
 	}`
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify the request contains required parameters
-		query := r.URL.Query()
-		if query.Get("token") != "test-token" {
-			t.Errorf("Expected token parameter")
-		}
-		if query.Get("time_start") == "" {
-			t.Errorf("Expected time_start parameter")
-		}
-		if query.Get("time_end") == "" {
-			t.Errorf("Expected time_end parameter")
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(mockResponse))
-	}))
-	defer server.Close()
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
 
 	client := NewClient("test-token")
 	station := Station{
@@ -208,139 +445,285 @@ func TestGetObservations_Success(t *testing.T) {
 	startTime := time.Unix(1609459000, 0)
 	endTime := time.Unix(1609459300, 0)
 
-	metrics, err := testGetObservations(client, server.URL, station, startTime, endTime, context.Background())
+	metrics, err := client.GetObservations(context.Background(), station, startTime, endTime)
+
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
 	if len(metrics) == 0 {
-		t.Error("Expected some metrics, got none")
+		t.Error("Expected metrics to be returned, got none")
+	}
+
+	// Verify that metrics were created (exact count depends on tempestudp.TempestObservationReport.Metrics())
+	// We can't easily verify the serial number was set without accessing internal fields,
+	// but the fact that metrics were created without error indicates success
+}
+
+func TestGetObservations_MultipleObservations(t *testing.T) {
+	// Response with multiple observations
+	mockBody := `{
+		"type": "obs_st",
+		"serial_number": "ORIGINAL-SERIAL",
+		"hub_sn": "HB-00001234",
+		"obs": [
+			[1609459200, 0.5, 1.2, 2.3, 180, 3, 1013.25, 20.5, 65, 50000, 3, 500, 0, 0, 0, 0, 2.6, 1],
+			[1609459260, 0.6, 1.3, 2.4, 185, 3, 1013.30, 20.6, 66, 51000, 3, 510, 0.1, 0, 0, 0, 2.6, 1],
+			[1609459320, 0.7, 1.4, 2.5, 190, 3, 1013.35, 20.7, 67, 52000, 3, 520, 0.2, 0, 0, 0, 2.6, 1]
+		],
+		"firmware_revision": 143
+	}`
+
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	station := Station{
+		deviceID:     67890,
+		serialNumber: "ST-00012345",
+	}
+
+	metrics, err := client.GetObservations(context.Background(), station, time.Now(), time.Now())
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if len(metrics) == 0 {
+		t.Error("Expected metrics from multiple observations, got none")
 	}
 }
 
 func TestGetObservations_HTTPError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		err: errors.New("network error"),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
 
 	client := NewClient("test-token")
 	station := Station{deviceID: 67890, serialNumber: "ST-00012345"}
 
-	_, err := testGetObservations(client, server.URL, station, time.Now(), time.Now(), context.Background())
+	_, err := client.GetObservations(context.Background(), station, time.Now(), time.Now())
+
 	if err == nil {
-		t.Error("Expected error for HTTP 404, got nil")
+		t.Error("Expected network error, got nil")
 	}
 }
+
+func TestGetObservations_InvalidJSON(t *testing.T) {
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, "not valid json"),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	station := Station{deviceID: 67890, serialNumber: "ST-00012345"}
+
+	_, err := client.GetObservations(context.Background(), station, time.Now(), time.Now())
+
+	if err == nil {
+		t.Error("Expected JSON parsing error, got nil")
+	}
+}
+
+// Note: We can't test the wrong report type case because the client uses log.Fatalf
+// which exits the process. This would require refactoring the client to return an error instead.
 
 func TestGetObservations_ContextCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate slow response
-		time.Sleep(100 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		err: context.Canceled,
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
 
 	client := NewClient("test-token")
 	station := Station{deviceID: 67890, serialNumber: "ST-00012345"}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
 
-	_, err := testGetObservations(client, server.URL, station, time.Now(), time.Now(), ctx)
+	_, err := client.GetObservations(ctx, station, time.Now(), time.Now())
+
 	if err == nil {
-		t.Error("Expected context deadline exceeded error, got nil")
+		t.Error("Expected context cancellation error, got nil")
 	}
 }
 
-// Helper functions to test with custom URLs (since the original methods have hardcoded URLs)
+func TestGetObservations_EmptyObservations(t *testing.T) {
+	// Valid response but with empty observations array
+	mockBody := `{
+		"type": "obs_st",
+		"serial_number": "ST-00012345",
+		"hub_sn": "HB-00001234",
+		"obs": [],
+		"firmware_revision": 143
+	}`
 
-func testListStations(client Client, baseURL string, ctx context.Context) ([]Station, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"?token="+client.token, nil)
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	station := Station{deviceID: 67890, serialNumber: "ST-00012345"}
+
+	metrics, err := client.GetObservations(context.Background(), station, time.Now(), time.Now())
+
 	if err != nil {
-		return nil, err
+		t.Fatalf("Expected no error for empty observations, got %v", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
+	// Empty observations should return empty metrics
+	if len(metrics) != 0 {
+		t.Errorf("Expected 0 metrics for empty observations, got %d", len(metrics))
 	}
-	defer resp.Body.Close()
+}
 
-	// Use same parsing logic as original ListStations method
-	var data struct {
-		Stations []struct {
-			CreatedEpoch int64 `json:"created_epoch"`
-			Devices      []struct {
-				DeviceID     int    `json:"device_id"`
-				DeviceType   string `json:"device_type"`
-				SerialNumber string `json:"serial_number"`
-			} `json:"devices"`
-			Name      string `json:"name"`
-			StationID int    `json:"station_id"`
-		} `json:"stations"`
-		Status struct {
-			StatusCode    int    `json:"status_code"`
-			StatusMessage string `json:"status_message"`
-		} `json:"status"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
-	}
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
 
-	var out []Station
-	for _, station := range data.Stations {
-		var deviceId int
-		var instance string
-		for _, dev := range station.Devices {
-			if dev.DeviceType == "ST" {
-				deviceId = dev.DeviceID
-				instance = dev.SerialNumber
+func TestListStations_StationWithZeroDeviceID(t *testing.T) {
+	mockBody := `{
+		"stations": [
+			{
+				"name": "Weird Station",
+				"station_id": 12345,
+				"created_epoch": 1609459200,
+				"devices": [
+					{
+						"device_id": 0,
+						"device_type": "ST",
+						"serial_number": "ST-00012345"
+					}
+				]
 			}
+		],
+		"status": {
+			"status_code": 0,
+			"status_message": "SUCCESS"
 		}
+	}`
 
-		if deviceId != 0 && instance != "" {
-			out = append(out, Station{
-				Name:         station.Name,
-				deviceID:     deviceId,
-				serialNumber: instance,
-				StationID:    station.StationID,
-				CreatedAt:    time.Unix(station.CreatedEpoch, 0),
-			})
-		}
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
 	}
-	return out, nil
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	stations, err := client.ListStations(context.Background())
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// deviceId == 0 should be filtered out (line 76 check)
+	if len(stations) != 0 {
+		t.Errorf("Expected 0 stations (device ID is 0), got %d", len(stations))
+	}
 }
 
-func testGetObservations(client Client, baseURL string, station Station, startAt, endAt time.Time, ctx context.Context) ([]prometheus.Metric, error) {
-	// Create a URL similar to the original method but with test server
-	url := baseURL + "?token=" + client.token + "&time_start=" + string(rune(startAt.Unix())) + "&time_end=" + string(rune(endAt.Unix()))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func TestListStations_StationWithEmptySerialNumber(t *testing.T) {
+	mockBody := `{
+		"stations": [
+			{
+				"name": "Missing Serial",
+				"station_id": 12345,
+				"created_epoch": 1609459200,
+				"devices": [
+					{
+						"device_id": 67890,
+						"device_type": "ST",
+						"serial_number": ""
+					}
+				]
+			}
+		],
+		"status": {
+			"status_code": 0,
+			"status_message": "SUCCESS"
+		}
+	}`
+
+	originalTransport := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &mockRoundTripper{
+		response: mockResponse(http.StatusOK, mockBody),
+	}
+	defer func() { http.DefaultClient.Transport = originalTransport }()
+
+	client := NewClient("test-token")
+	stations, err := client.ListStations(context.Background())
+
 	if err != nil {
-		return nil, err
+		t.Fatalf("Expected no error, got %v", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
+	// Empty serial number should be filtered out (line 76 check)
+	if len(stations) != 0 {
+		t.Errorf("Expected 0 stations (serial number is empty), got %d", len(stations))
 	}
-	defer resp.Body.Close()
+}
 
-	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
-		return nil, http.ErrNoLocation // Simple error for testing
-	}
+func TestGetObservations_URLParameters(t *testing.T) {
+	// Test that URL is constructed correctly with all parameters
+	var capturedURL string
 
-	_, err = io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
+	originalTransport := http.DefaultClient.Transport
+	mockTransport := mockRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		capturedURL = req.URL.String()
 
-	// Create a mock metric for successful response
-	mockMetric := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "test_metric",
-		Help: "A test metric",
+		mockResp := `{
+			"type": "obs_st",
+			"serial_number": "ORIG",
+			"hub_sn": "HB-00001234",
+			"obs": [[1609459200, 0.5, 1.2, 2.3, 180, 3, 1013.25, 20.5, 65, 50000, 3, 500, 0, 0, 0, 0, 2.6, 1]],
+			"firmware_revision": 143
+		}`
+
+		return mockResponse(http.StatusOK, mockResp), nil
 	})
+	http.DefaultClient.Transport = mockTransport
+	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	return []prometheus.Metric{mockMetric}, nil
+	client := NewClient("my-secret-token")
+	station := Station{
+		deviceID:     98765,
+		serialNumber: "ST-00098765",
+	}
+
+	startTime := time.Unix(1609459000, 0)
+	endTime := time.Unix(1609459300, 0)
+
+	_, err := client.GetObservations(context.Background(), station, startTime, endTime)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Verify URL contains all required parameters
+	if !strings.Contains(capturedURL, "device/98765") {
+		t.Errorf("URL should contain device ID 98765: %s", capturedURL)
+	}
+	if !strings.Contains(capturedURL, "token=my-secret-token") {
+		t.Errorf("URL should contain token: %s", capturedURL)
+	}
+	if !strings.Contains(capturedURL, "time_start=1609459000") {
+		t.Errorf("URL should contain start time: %s", capturedURL)
+	}
+	if !strings.Contains(capturedURL, "time_end=1609459300") {
+		t.Errorf("URL should contain end time: %s", capturedURL)
+	}
+}
+
+// mockRoundTripperFunc allows using a function as a RoundTripper
+type mockRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f mockRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
