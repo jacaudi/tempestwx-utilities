@@ -22,4 +22,53 @@ runs:
       working-directory: ${{ github.workspace }}
       run: |
         go version
-        go test -json ./... 
+        go test -json ./... 2>&1 | tee test-output.json
+        # Check if any tests failed
+        if grep -q '"Action":"fail"' test-output.json; then
+          TEST_FAILED=true
+        else
+          TEST_FAILED=false
+        fi
+        echo "TEST_FAILED=$TEST_FAILED" >> $GITHUB_ENV
+
+    - name: Generate Test Summary
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        # Parse JSON test output and generate markdown table
+        # Extract test results (pass, fail, skip) sorted by package then test name
+        echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| File | Test | Status | Duration |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+
+        # Process JSON output: filter for pass/fail/skip actions with Test field
+        # Sort by Package then Test name
+        cat test-output.json | \
+          jq -r 'select(.Action == "pass" or .Action == "fail" or .Action == "skip") | select(.Test != null) | [.Package, .Test, .Action, (.Elapsed | tostring)] | @tsv' 2>/dev/null | \
+          sort -t$'\t' -k1,1 -k2,2 | \
+          while IFS=$'\t' read -r pkg test action elapsed; do
+            # Convert package path to relative file path
+            file=$(echo "$pkg" | sed 's|tempestwx-utilities/||')
+            # Format status with emoji
+            case "$action" in
+              pass) status="✅ Pass" ;;
+              fail) status="❌ Fail" ;;
+              skip) status="⏭️ Skip" ;;
+              *) status="$action" ;;
+            esac
+            # Format duration
+            if [ "$elapsed" != "null" ] && [ -n "$elapsed" ]; then
+              duration="${elapsed}s"
+            else
+              duration="-"
+            fi
+            echo "| $file | $test | $status | $duration |" >> $GITHUB_STEP_SUMMARY
+          done
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+    - name: Fail if tests failed
+      shell: bash
+      if: env.TEST_FAILED == 'true'
+      run: exit 1
