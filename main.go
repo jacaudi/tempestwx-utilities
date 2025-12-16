@@ -45,6 +45,16 @@ func main() {
 			promWriter := prometheus.NewPrometheusWriter(pushURL, jobName)
 			metricsSink.AddWriter(promWriter)
 		}
+
+		// Configure Prometheus metrics server (scrape endpoint)
+		metricsAddr := os.Getenv("METRICS_ADDR")
+		if metricsAddr != "" {
+			metricsServer := prometheus.NewMetricsServer(metricsAddr)
+			if err := metricsServer.Start(); err != nil {
+				log.Fatalf("failed to start metrics server: %v", err)
+			}
+			metricsSink.AddWriter(metricsServer)
+		}
 	}
 
 	// Configure Postgres writer (both modes)
@@ -62,7 +72,7 @@ func main() {
 
 	// Require at least one writer
 	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set PUSH_URL and/or DATABASE_HOST/DATABASE_URL")
+		log.Fatal("no writers configured - set PUSH_URL, METRICS_ADDR, and/or DATABASE_HOST/DATABASE_URL")
 	}
 
 	// Choose operational mode

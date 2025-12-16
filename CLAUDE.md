@@ -34,9 +34,20 @@ docker buildx bake image-local
 
 ### Running Locally
 ```bash
-# UDP mode (requires host network for broadcast reception)
+# UDP mode with push gateway (requires host network for broadcast reception)
 docker run -it --rm --net=host \
   -e PUSH_URL=http://localhost:9091 \
+  tempestwx-utilities:latest
+
+# UDP mode with scrape endpoint (Prometheus pulls from /metrics)
+docker run -it --rm --net=host \
+  -e METRICS_ADDR=:9090 \
+  tempestwx-utilities:latest
+
+# UDP mode with both push gateway and scrape endpoint
+docker run -it --rm --net=host \
+  -e PUSH_URL=http://localhost:9091 \
+  -e METRICS_ADDR=:9090 \
   tempestwx-utilities:latest
 
 # API export mode
@@ -79,10 +90,13 @@ The application switches modes based on presence of `TOKEN` environment variable
 
 ### Environment Variables
 
-- `PUSH_URL`: Required for UDP mode. URL of Prometheus Pushgateway or compatible service (e.g., VictoriaMetrics)
+- `PUSH_URL`: URL of Prometheus Pushgateway or compatible service (e.g., VictoriaMetrics)
 - `JOB_NAME`: Job label for pushed metrics (default: "tempest")
+- `METRICS_ADDR`: Address to expose `/metrics` endpoint for Prometheus scraping (e.g., `:9090`)
 - `LOG_UDP`: Optional. Set to "true" or "1" to log all UDP broadcasts received (default: false)
 - `TOKEN`: Optional. When set, switches to API export mode for historical data
+
+**Note:** In UDP mode, at least one of `PUSH_URL`, `METRICS_ADDR`, or `DATABASE_HOST`/`DATABASE_URL` must be set.
 
 ## PostgreSQL Storage (Optional)
 
@@ -131,13 +145,16 @@ All tables use UUIDv7 primary keys (generated in Go, no PostgreSQL extensions re
 
 ### Operational Modes
 
-| PUSH_URL | DATABASE_URL/HOST | TOKEN | Behavior |
-|----------|-------------------|-------|----------|
-| Yes | No | No | Prometheus only (current behavior) |
-| Yes | Yes | No | Both Prometheus + Postgres |
-| No | Yes | No | Postgres only |
-| N/A | No | Yes | API export to .gz files |
-| N/A | Yes | Yes | API export to Postgres (+ optional .gz files) |
+| PUSH_URL | METRICS_ADDR | DATABASE_URL/HOST | TOKEN | Behavior |
+|----------|--------------|-------------------|-------|----------|
+| Yes | No | No | No | Push gateway only |
+| No | Yes | No | No | Scrape endpoint only (`:9090/metrics`) |
+| Yes | Yes | No | No | Both push gateway + scrape endpoint |
+| Yes | No | Yes | No | Push gateway + Postgres |
+| No | Yes | Yes | No | Scrape endpoint + Postgres |
+| Yes | Yes | Yes | No | All three outputs |
+| N/A | N/A | No | Yes | API export to .gz files |
+| N/A | N/A | Yes | Yes | API export to Postgres (+ optional .gz files) |
 
 ### Docker Compose Example
 
@@ -148,6 +165,7 @@ services:
     network_mode: host
     environment:
       PUSH_URL: http://pushgateway:9091
+      METRICS_ADDR: ":9090"  # Exposes /metrics on port 9090
       DATABASE_HOST: postgres
       DATABASE_USERNAME: tempest
       DATABASE_PASSWORD: ${DB_PASSWORD}
@@ -171,6 +189,19 @@ services:
 volumes:
   pgdata:
 ```
+
+### Prometheus Scrape Configuration
+
+When using the metrics endpoint (`METRICS_ADDR`), configure Prometheus to scrape it:
+
+```yaml
+scrape_configs:
+  - job_name: 'tempest'
+    static_configs:
+      - targets: ['localhost:9090']
+```
+
+The `/metrics` endpoint exposes all weather station metrics in standard Prometheus format. A `/health` endpoint is also available for health checks.
 
 ### API Export with Backfill
 

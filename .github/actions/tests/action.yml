@@ -22,4 +22,96 @@ runs:
       working-directory: ${{ github.workspace }}
       run: |
         go version
-        go test -json ./... 
+        START_TIME=$(date +%s)
+        go test -json ./... 2>&1 | tee test-output.json || true
+        END_TIME=$(date +%s)
+        echo "TEST_DURATION=$((END_TIME - START_TIME))" >> $GITHUB_ENV
+
+        # Check if any tests failed
+        if grep -q '"Action":"fail"' test-output.json; then
+          echo "TEST_FAILED=true" >> $GITHUB_ENV
+        else
+          echo "TEST_FAILED=false" >> $GITHUB_ENV
+        fi
+
+    - name: Generate Test Summary
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        # Calculate test statistics
+        PASSED=$(cat test-output.json | jq -r 'select(.Action == "pass") | select(.Test != null)' | wc -l)
+        FAILED=$(cat test-output.json | jq -r 'select(.Action == "fail") | select(.Test != null)' | wc -l)
+        SKIPPED=$(cat test-output.json | jq -r 'select(.Action == "skip") | select(.Test != null)' | wc -l)
+        TOTAL=$((PASSED + FAILED + SKIPPED))
+
+        # Format duration
+        DURATION=${{ env.TEST_DURATION }}
+        if [ "$DURATION" -ge 60 ]; then
+          DURATION_FMT="$((DURATION / 60))m $((DURATION % 60))s"
+        else
+          DURATION_FMT="${DURATION}s"
+        fi
+
+        # Determine overall status
+        if [ "${{ env.TEST_FAILED }}" == "true" ]; then
+          STATUS="✗"
+          STATUS_TEXT="Failed"
+        else
+          STATUS="✓"
+          STATUS_TEXT="Passed"
+        fi
+
+        # Generate summary header
+        echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Job | Status | Duration | Tests |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----|--------|----------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Go Tests | ${STATUS} ${STATUS_TEXT} | ${DURATION_FMT} | ${PASSED}/${TOTAL} passed |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        # Show success or failure message
+        if [ "${{ env.TEST_FAILED }}" == "true" ]; then
+          echo "### ❌ Some tests failed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "### ✅ All checks passed!" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        # Detailed test results table
+        echo "<details>" >> $GITHUB_STEP_SUMMARY
+        echo "<summary>Test Details (${TOTAL} tests)</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| File | Test | Status | Duration |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+
+        # Process JSON output: filter for pass/fail/skip actions with Test field
+        # Sort by Package then Test name
+        cat test-output.json | \
+          jq -r 'select(.Action == "pass" or .Action == "fail" or .Action == "skip") | select(.Test != null) | [.Package, .Test, .Action, (.Elapsed | tostring)] | @tsv' 2>/dev/null | \
+          sort -t$'\t' -k1,1 -k2,2 | \
+          while IFS=$'\t' read -r pkg test action elapsed; do
+            # Convert package path to relative file path
+            file=$(echo "$pkg" | sed 's|tempestwx-utilities/||')
+            # Format status with emoji
+            case "$action" in
+              pass) status="✓" ;;
+              fail) status="✗" ;;
+              skip) status="⊘" ;;
+              *) status="$action" ;;
+            esac
+            # Format duration
+            if [ "$elapsed" != "null" ] && [ -n "$elapsed" ]; then
+              duration="${elapsed}s"
+            else
+              duration="-"
+            fi
+            echo "| \`$file\` | \`$test\` | $status | $duration |" >> $GITHUB_STEP_SUMMARY
+          done
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+
+    - name: Fail if tests failed
+      shell: bash
+      if: env.TEST_FAILED == 'true'
+      run: exit 1
