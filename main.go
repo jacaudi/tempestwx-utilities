@@ -66,11 +66,15 @@ func main() {
 	}
 
 	// Configure Postgres writer (both modes)
-	dbConfig, err := config.GetDatabaseConfig()
-	if err != nil {
-		log.Fatalf("database configuration error: %v", err)
-	}
-	if dbConfig != "" {
+	enablePostgres, _ := strconv.ParseBool(os.Getenv("ENABLE_POSTGRES_DATABASE"))
+	if enablePostgres {
+		dbConfig, err := config.GetDatabaseConfig()
+		if err != nil {
+			log.Fatalf("database configuration error: %v", err)
+		}
+		if dbConfig == "" {
+			log.Fatal("DATABASE_URL or DATABASE_HOST is required when ENABLE_POSTGRES_DATABASE is true")
+		}
 		pgWriter, err := postgres.NewPostgresWriter(ctx, dbConfig)
 		if err != nil {
 			log.Fatalf("failed to initialize postgres: %v", err)
@@ -80,7 +84,7 @@ func main() {
 
 	// Require at least one writer
 	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or DATABASE_HOST/DATABASE_URL")
+		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or ENABLE_POSTGRES_DATABASE")
 	}
 
 	// Choose operational mode

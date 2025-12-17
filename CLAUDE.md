@@ -103,10 +103,11 @@ The application switches modes based on presence of `TOKEN` environment variable
 - `JOB_NAME`: Job label for pushed metrics (default: "tempest")
 - `ENABLE_PROMETHEUS_METRICS`: Set to "true" or "1" to expose `/metrics` endpoint for Prometheus scraping
 - `PROMETHEUS_METRICS_PORT`: Port for the metrics endpoint (default: 9000)
+- `ENABLE_POSTGRES_DATABASE`: Set to "true" or "1" to enable writing metrics to PostgreSQL
 - `LOG_UDP`: Optional. Set to "true" or "1" to log all UDP broadcasts received (default: false)
 - `TOKEN`: Optional. When set, switches to API export mode for historical data
 
-**Note:** In UDP mode, at least one of `ENABLE_PROMETHEUS_PUSHGATEWAY`, `ENABLE_PROMETHEUS_METRICS`, or `DATABASE_HOST`/`DATABASE_URL` must be set.
+**Note:** In UDP mode, at least one of `ENABLE_PROMETHEUS_PUSHGATEWAY`, `ENABLE_PROMETHEUS_METRICS`, or `ENABLE_POSTGRES_DATABASE` must be set.
 
 ## PostgreSQL Storage (Optional)
 
@@ -155,8 +156,8 @@ All tables use UUIDv7 primary keys (generated in Go, no PostgreSQL extensions re
 
 ### Operational Modes
 
-| ENABLE_PROMETHEUS_PUSHGATEWAY | ENABLE_PROMETHEUS_METRICS | DATABASE_URL/HOST | TOKEN | Behavior |
-|-------------------------------|---------------------------|-------------------|-------|----------|
+| ENABLE_PROMETHEUS_PUSHGATEWAY | ENABLE_PROMETHEUS_METRICS | ENABLE_POSTGRES_DATABASE | TOKEN | Behavior |
+|-------------------------------|---------------------------|--------------------------|-------|----------|
 | Yes | No | No | No | Push gateway only |
 | No | Yes | No | No | Scrape endpoint only (`:9000/metrics`) |
 | Yes | Yes | No | No | Both push gateway + scrape endpoint |
@@ -178,6 +179,7 @@ services:
       PROMETHEUS_PUSHGATEWAY_URL: http://pushgateway:9091
       ENABLE_PROMETHEUS_METRICS: "true"  # Exposes /metrics on port 9000
       # PROMETHEUS_METRICS_PORT: "9090"  # Optional: override default port
+      ENABLE_POSTGRES_DATABASE: "true"
       DATABASE_HOST: postgres
       DATABASE_USERNAME: tempest
       DATABASE_PASSWORD: ${DB_PASSWORD}
@@ -220,13 +222,13 @@ The `/metrics` endpoint exposes all weather station metrics in standard Promethe
 To backfill historical data into Postgres:
 
 ```bash
-TOKEN=your_api_token DATABASE_URL=postgresql://... go run .
+TOKEN=your_api_token ENABLE_POSTGRES_DATABASE=true DATABASE_URL=postgresql://... go run .
 ```
 
 Optionally keep .gz files:
 
 ```bash
-TOKEN=your_api_token DATABASE_URL=postgresql://... KEEP_EXPORT_FILES=true go run .
+TOKEN=your_api_token ENABLE_POSTGRES_DATABASE=true DATABASE_URL=postgresql://... KEEP_EXPORT_FILES=true go run .
 ```
 
 ## Testing Notes
