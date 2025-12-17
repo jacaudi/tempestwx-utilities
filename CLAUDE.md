@@ -36,7 +36,8 @@ docker buildx bake image-local
 ```bash
 # UDP mode with push gateway (requires host network for broadcast reception)
 docker run -it --rm --net=host \
-  -e PUSH_URL=http://localhost:9091 \
+  -e ENABLE_PROMETHEUS_PUSHGATEWAY=true \
+  -e PROMETHEUS_PUSHGATEWAY_URL=http://localhost:9091 \
   tempestwx-utilities:latest
 
 # UDP mode with scrape endpoint (Prometheus pulls from /metrics)
@@ -52,7 +53,8 @@ docker run -it --rm --net=host \
 
 # UDP mode with both push gateway and scrape endpoint
 docker run -it --rm --net=host \
-  -e PUSH_URL=http://localhost:9091 \
+  -e ENABLE_PROMETHEUS_PUSHGATEWAY=true \
+  -e PROMETHEUS_PUSHGATEWAY_URL=http://localhost:9091 \
   -e ENABLE_PROMETHEUS_METRICS=true \
   tempestwx-utilities:latest
 
@@ -96,14 +98,15 @@ The application switches modes based on presence of `TOKEN` environment variable
 
 ### Environment Variables
 
-- `PUSH_URL`: URL of Prometheus Pushgateway or compatible service (e.g., VictoriaMetrics)
+- `ENABLE_PROMETHEUS_PUSHGATEWAY`: Set to "true" or "1" to enable pushing metrics to a Prometheus Pushgateway
+- `PROMETHEUS_PUSHGATEWAY_URL`: URL of Prometheus Pushgateway or compatible service (e.g., VictoriaMetrics). Required when `ENABLE_PROMETHEUS_PUSHGATEWAY` is true
 - `JOB_NAME`: Job label for pushed metrics (default: "tempest")
 - `ENABLE_PROMETHEUS_METRICS`: Set to "true" or "1" to expose `/metrics` endpoint for Prometheus scraping
 - `PROMETHEUS_METRICS_PORT`: Port for the metrics endpoint (default: 9000)
 - `LOG_UDP`: Optional. Set to "true" or "1" to log all UDP broadcasts received (default: false)
 - `TOKEN`: Optional. When set, switches to API export mode for historical data
 
-**Note:** In UDP mode, at least one of `PUSH_URL`, `ENABLE_PROMETHEUS_METRICS`, or `DATABASE_HOST`/`DATABASE_URL` must be set.
+**Note:** In UDP mode, at least one of `ENABLE_PROMETHEUS_PUSHGATEWAY`, `ENABLE_PROMETHEUS_METRICS`, or `DATABASE_HOST`/`DATABASE_URL` must be set.
 
 ## PostgreSQL Storage (Optional)
 
@@ -152,8 +155,8 @@ All tables use UUIDv7 primary keys (generated in Go, no PostgreSQL extensions re
 
 ### Operational Modes
 
-| PUSH_URL | ENABLE_PROMETHEUS_METRICS | DATABASE_URL/HOST | TOKEN | Behavior |
-|----------|---------------------------|-------------------|-------|----------|
+| ENABLE_PROMETHEUS_PUSHGATEWAY | ENABLE_PROMETHEUS_METRICS | DATABASE_URL/HOST | TOKEN | Behavior |
+|-------------------------------|---------------------------|-------------------|-------|----------|
 | Yes | No | No | No | Push gateway only |
 | No | Yes | No | No | Scrape endpoint only (`:9000/metrics`) |
 | Yes | Yes | No | No | Both push gateway + scrape endpoint |
@@ -171,7 +174,8 @@ services:
     image: tempestwx-utilities:latest
     network_mode: host
     environment:
-      PUSH_URL: http://pushgateway:9091
+      ENABLE_PROMETHEUS_PUSHGATEWAY: "true"
+      PROMETHEUS_PUSHGATEWAY_URL: http://pushgateway:9091
       ENABLE_PROMETHEUS_METRICS: "true"  # Exposes /metrics on port 9000
       # PROMETHEUS_METRICS_PORT: "9090"  # Optional: override default port
       DATABASE_HOST: postgres

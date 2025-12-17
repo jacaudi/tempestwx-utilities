@@ -36,8 +36,12 @@ func main() {
 	// Configure Prometheus writer (UDP mode only)
 	token := os.Getenv("TOKEN")
 	if token == "" {
-		pushURL := os.Getenv("PUSH_URL")
-		if pushURL != "" {
+		enablePushgateway, _ := strconv.ParseBool(os.Getenv("ENABLE_PROMETHEUS_PUSHGATEWAY"))
+		if enablePushgateway {
+			pushURL := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
+			if pushURL == "" {
+				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true")
+			}
 			jobName := os.Getenv("JOB_NAME")
 			if jobName == "" {
 				jobName = "tempest"
@@ -76,7 +80,7 @@ func main() {
 
 	// Require at least one writer
 	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set PUSH_URL, ENABLE_PROMETHEUS_METRICS, and/or DATABASE_HOST/DATABASE_URL")
+		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or DATABASE_HOST/DATABASE_URL")
 	}
 
 	// Choose operational mode
