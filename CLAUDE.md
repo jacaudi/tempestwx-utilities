@@ -124,17 +124,17 @@ The exporter can write metrics to PostgreSQL in addition to (or instead of) Prom
 
 **Option 1: Full connection string**
 ```bash
-DATABASE_URL=postgresql://user:pass@localhost:5432/weather
+POSTGRES_URL=postgresql://user:pass@localhost:5432/weather
 ```
 
 **Option 2: Individual components**
 ```bash
-DATABASE_HOST=postgres
-DATABASE_PORT=5432              # optional, default: 5432
-DATABASE_USERNAME=tempest
-DATABASE_PASSWORD=secret
-DATABASE_NAME=weather
-DATABASE_SSLMODE=disable        # optional: disable, require, verify-ca, verify-full
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432              # optional, default: 5432
+POSTGRES_USERNAME=tempest
+POSTGRES_PASSWORD=secret
+POSTGRES_NAME=weather
+POSTGRES_SSLMODE=disable        # optional: disable, require, verify-ca, verify-full
 ```
 
 **Optional tuning:**
@@ -180,10 +180,10 @@ services:
       ENABLE_PROMETHEUS_METRICS: "true"  # Exposes /metrics on port 9000
       # PROMETHEUS_METRICS_PORT: "9090"  # Optional: override default port
       ENABLE_POSTGRES_DATABASE: "true"
-      DATABASE_HOST: postgres
-      DATABASE_USERNAME: tempest
-      DATABASE_PASSWORD: ${DB_PASSWORD}
-      DATABASE_NAME: weather
+      POSTGRES_HOST: postgres
+      POSTGRES_USERNAME: tempest
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_NAME: weather
     depends_on:
       postgres:
         condition: service_healthy
@@ -222,13 +222,13 @@ The `/metrics` endpoint exposes all weather station metrics in standard Promethe
 To backfill historical data into Postgres:
 
 ```bash
-TOKEN=your_api_token ENABLE_POSTGRES_DATABASE=true DATABASE_URL=postgresql://... go run .
+TOKEN=your_api_token ENABLE_POSTGRES_DATABASE=true POSTGRES_URL=postgresql://... go run .
 ```
 
 Optionally keep .gz files:
 
 ```bash
-TOKEN=your_api_token ENABLE_POSTGRES_DATABASE=true DATABASE_URL=postgresql://... KEEP_EXPORT_FILES=true go run .
+TOKEN=your_api_token ENABLE_POSTGRES_DATABASE=true POSTGRES_URL=postgresql://... KEEP_EXPORT_FILES=true go run .
 ```
 
 ## Testing Notes

@@ -73,7 +73,7 @@ func main() {
 			log.Fatalf("database configuration error: %v", err)
 		}
 		if dbConfig == "" {
-			log.Fatal("DATABASE_URL or DATABASE_HOST is required when ENABLE_POSTGRES_DATABASE is true")
+			log.Fatal("POSTGRES_URL or POSTGRES_HOST is required when ENABLE_POSTGRES_DATABASE is true")
 		}
 		pgWriter, err := postgres.NewPostgresWriter(ctx, dbConfig)
 		if err != nil {
