@@ -15,7 +15,7 @@ import (
 )
 
 func TestMetricsServer_StartAndClose(t *testing.T) {
-	server := NewMetricsServer(":0") // Use port 0 for random available port
+	server := NewMetricsServer("0") // Use port 0 for random available port
 
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
@@ -30,7 +30,7 @@ func TestMetricsServer_StartAndClose(t *testing.T) {
 }
 
 func TestMetricsServer_WriteReport(t *testing.T) {
-	server := NewMetricsServer(":0")
+	server := NewMetricsServer("0")
 	ctx := context.Background()
 
 	report := &tempestudp.TempestObservationReport{
@@ -52,7 +52,7 @@ func TestMetricsServer_WriteReport(t *testing.T) {
 }
 
 func TestMetricsServer_WriteMetrics(t *testing.T) {
-	server := NewMetricsServer(":0")
+	server := NewMetricsServer("0")
 	ctx := context.Background()
 
 	// Create a test metric
@@ -75,7 +75,7 @@ func TestMetricsServer_WriteMetrics(t *testing.T) {
 }
 
 func TestMetricsServer_MetricsEndpoint(t *testing.T) {
-	server := NewMetricsServer("127.0.0.1:19090")
+	server := NewMetricsServer("19090")
 
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
@@ -112,7 +112,7 @@ func TestMetricsServer_MetricsEndpoint(t *testing.T) {
 }
 
 func TestMetricsServer_HealthEndpoint(t *testing.T) {
-	server := NewMetricsServer("127.0.0.1:19091")
+	server := NewMetricsServer("19091")
 
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
@@ -219,7 +219,7 @@ func TestLatestMetricsCollector_Collect(t *testing.T) {
 }
 
 func TestMetricsServer_Flush(t *testing.T) {
-	server := NewMetricsServer(":0")
+	server := NewMetricsServer("0")
 	ctx := context.Background()
 
 	// Flush should be a no-op and return nil

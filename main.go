@@ -53,8 +53,7 @@ func main() {
 			if port == "" {
 				port = "9000"
 			}
-			metricsAddr := ":" + port
-			metricsServer := prometheus.NewMetricsServer(metricsAddr)
+			metricsServer := prometheus.NewMetricsServer(port)
 			if err := metricsServer.Start(); err != nil {
 				log.Fatalf("failed to start metrics server: %v", err)
 			}

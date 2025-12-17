@@ -19,15 +19,15 @@ import (
 // MetricsServer exposes a /metrics endpoint for Prometheus scraping.
 // It implements the sink.MetricsWriter interface.
 type MetricsServer struct {
-	addr       string
+	port       string
 	server     *http.Server
 	collector  *latestMetricsCollector
 	registry   *prometheus.Registry
 	shutdownWg sync.WaitGroup
 }
 
-// NewMetricsServer creates a new metrics server listening on the given address.
-func NewMetricsServer(addr string) *MetricsServer {
+// NewMetricsServer creates a new metrics server listening on the given port.
+func NewMetricsServer(port string) *MetricsServer {
 	collector := &latestMetricsCollector{
 		metrics: make(map[string]prometheus.Metric),
 	}
@@ -44,6 +44,7 @@ func NewMetricsServer(addr string) *MetricsServer {
 		w.Write([]byte("OK"))
 	})
 
+	addr := ":" + port
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -52,7 +53,7 @@ func NewMetricsServer(addr string) *MetricsServer {
 	}
 
 	return &MetricsServer{
-		addr:      addr,
+		port:      port,
 		server:    server,
 		collector: collector,
 		registry:  registry,
@@ -64,7 +65,7 @@ func (s *MetricsServer) Start() error {
 	s.shutdownWg.Add(1)
 	go func() {
 		defer s.shutdownWg.Done()
-		log.Printf("metrics: starting HTTP server on %s", s.addr)
+		log.Printf("metrics: starting HTTP server on port %s", s.port)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("metrics: server error: %v", err)
 		}
