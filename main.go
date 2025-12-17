@@ -47,8 +47,13 @@ func main() {
 		}
 
 		// Configure Prometheus metrics server (scrape endpoint)
-		metricsAddr := os.Getenv("METRICS_ADDR")
-		if metricsAddr != "" {
+		enableMetrics, _ := strconv.ParseBool(os.Getenv("ENABLE_PROMETHEUS_METRICS"))
+		if enableMetrics {
+			port := os.Getenv("PROMETHEUS_METRICS_PORT")
+			if port == "" {
+				port = "9000"
+			}
+			metricsAddr := ":" + port
 			metricsServer := prometheus.NewMetricsServer(metricsAddr)
 			if err := metricsServer.Start(); err != nil {
 				log.Fatalf("failed to start metrics server: %v", err)
@@ -72,7 +77,7 @@ func main() {
 
 	// Require at least one writer
 	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set PUSH_URL, METRICS_ADDR, and/or DATABASE_HOST/DATABASE_URL")
+		log.Fatal("no writers configured - set PUSH_URL, ENABLE_PROMETHEUS_METRICS, and/or DATABASE_HOST/DATABASE_URL")
 	}
 
 	// Choose operational mode
