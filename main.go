@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"tempestwx-utilities/internal/config"
-	"tempestwx-utilities/internal/prometheus"
 	"tempestwx-utilities/internal/postgres"
+	"tempestwx-utilities/internal/prometheus"
 	"tempestwx-utilities/internal/sink"
 	"tempestwx-utilities/internal/tempestapi"
 	"tempestwx-utilities/internal/tempestudp"
@@ -66,14 +66,14 @@ func main() {
 	}
 
 	// Configure Postgres writer (both modes)
-	enablePostgres, _ := strconv.ParseBool(os.Getenv("ENABLE_POSTGRES_DATABASE"))
+	enablePostgres, _ := strconv.ParseBool(os.Getenv("ENABLE_POSTGRES"))
 	if enablePostgres {
 		dbConfig, err := config.GetDatabaseConfig()
 		if err != nil {
 			log.Fatalf("database configuration error: %v", err)
 		}
 		if dbConfig == "" {
-			log.Fatal("POSTGRES_URL or POSTGRES_HOST is required when ENABLE_POSTGRES_DATABASE is true")
+			log.Fatal("POSTGRES_URL or POSTGRES_HOST is required when ENABLE_POSTGRES is true")
 		}
 		pgWriter, err := postgres.NewPostgresWriter(ctx, dbConfig)
 		if err != nil {
@@ -84,7 +84,7 @@ func main() {
 
 	// Require at least one writer
 	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or ENABLE_POSTGRES_DATABASE")
+		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or ENABLE_POSTGRES")
 	}
 
 	// Choose operational mode
