@@ -157,7 +157,7 @@ All tables use UUIDv7 primary keys (generated in Go, no PostgreSQL extensions re
 ### Operational Modes
 
 | ENABLE_PROMETHEUS_PUSHGATEWAY | ENABLE_PROMETHEUS_METRICS | ENABLE_POSTGRES | TOKEN | Behavior |
-|-------------------------------|---------------------------|--------------------------|-------|----------|
+|-------------------------------|---------------------------|-----------------|-------|----------|
 | Yes | No | No | No | Push gateway only |
 | No | Yes | No | No | Scrape endpoint only (`:9000/metrics`) |
 | Yes | Yes | No | No | Both push gateway + scrape endpoint |
@@ -228,7 +228,7 @@ TOKEN=your_api_token ENABLE_POSTGRES=true POSTGRES_URL=postgresql://... go run .
 Optionally keep .gz files:
 
 ```bash
-TOKEN=your_api_token ENABLE_POSTGRES_DATABASE=true POSTGRES_URL=postgresql://... KEEP_EXPORT_FILES=true go run .
+TOKEN=your_api_token ENABLE_POSTGRES=true POSTGRES_URL=postgresql://... KEEP_EXPORT_FILES=true go run .
 ```
 
 ## Testing Notes
