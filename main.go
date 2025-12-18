@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"tempestwx-utilities/internal/config"
-	"tempestwx-utilities/internal/prometheus"
 	"tempestwx-utilities/internal/postgres"
+	"tempestwx-utilities/internal/prometheus"
 	"tempestwx-utilities/internal/sink"
 	"tempestwx-utilities/internal/tempestapi"
 	"tempestwx-utilities/internal/tempestudp"
@@ -36,8 +36,12 @@ func main() {
 	// Configure Prometheus writer (UDP mode only)
 	token := os.Getenv("TOKEN")
 	if token == "" {
-		pushURL := os.Getenv("PUSH_URL")
-		if pushURL != "" {
+		enablePushgateway, _ := strconv.ParseBool(os.Getenv("ENABLE_PROMETHEUS_PUSHGATEWAY"))
+		if enablePushgateway {
+			pushURL := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
+			if pushURL == "" {
+				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true")
+			}
 			jobName := os.Getenv("JOB_NAME")
 			if jobName == "" {
 				jobName = "tempest"
@@ -47,9 +51,13 @@ func main() {
 		}
 
 		// Configure Prometheus metrics server (scrape endpoint)
-		metricsAddr := os.Getenv("METRICS_ADDR")
-		if metricsAddr != "" {
-			metricsServer := prometheus.NewMetricsServer(metricsAddr)
+		enableMetrics, _ := strconv.ParseBool(os.Getenv("ENABLE_PROMETHEUS_METRICS"))
+		if enableMetrics {
+			port := os.Getenv("PROMETHEUS_METRICS_PORT")
+			if port == "" {
+				port = "9000"
+			}
+			metricsServer := prometheus.NewMetricsServer(port)
 			if err := metricsServer.Start(); err != nil {
 				log.Fatalf("failed to start metrics server: %v", err)
 			}
@@ -58,11 +66,15 @@ func main() {
 	}
 
 	// Configure Postgres writer (both modes)
-	dbConfig, err := config.GetDatabaseConfig()
-	if err != nil {
-		log.Fatalf("database configuration error: %v", err)
-	}
-	if dbConfig != "" {
+	enablePostgres, _ := strconv.ParseBool(os.Getenv("ENABLE_POSTGRES"))
+	if enablePostgres {
+		dbConfig, err := config.GetDatabaseConfig()
+		if err != nil {
+			log.Fatalf("database configuration error: %v", err)
+		}
+		if dbConfig == "" {
+			log.Fatal("POSTGRES_URL or POSTGRES_HOST is required when ENABLE_POSTGRES is true")
+		}
 		pgWriter, err := postgres.NewPostgresWriter(ctx, dbConfig)
 		if err != nil {
 			log.Fatalf("failed to initialize postgres: %v", err)
@@ -72,7 +84,7 @@ func main() {
 
 	// Require at least one writer
 	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set PUSH_URL, METRICS_ADDR, and/or DATABASE_HOST/DATABASE_URL")
+		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or ENABLE_POSTGRES")
 	}
 
 	// Choose operational mode

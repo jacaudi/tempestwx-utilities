@@ -54,11 +54,9 @@ runs:
 
         # Determine overall status
         if [ "${{ env.TEST_FAILED }}" == "true" ]; then
-          STATUS="✗"
-          STATUS_TEXT="Failed"
+          STATUS="FAILED"
         else
-          STATUS="✓"
-          STATUS_TEXT="Passed"
+          STATUS="PASSED"
         fi
 
         # Generate summary header
@@ -66,7 +64,7 @@ runs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "| Job | Status | Duration | Tests |" >> $GITHUB_STEP_SUMMARY
         echo "|-----|--------|----------|-------|" >> $GITHUB_STEP_SUMMARY
-        echo "| Go Tests | ${STATUS} ${STATUS_TEXT} | ${DURATION_FMT} | ${PASSED}/${TOTAL} passed |" >> $GITHUB_STEP_SUMMARY
+        echo "| Go Tests | ${STATUS} | ${DURATION_FMT} | ${PASSED}/${TOTAL} passed |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
         # Show success or failure message
@@ -92,11 +90,11 @@ runs:
           while IFS=$'\t' read -r pkg test action elapsed; do
             # Convert package path to relative file path
             file=$(echo "$pkg" | sed 's|tempestwx-utilities/||')
-            # Format status with emoji
+            # Format status with words
             case "$action" in
-              pass) status="✓" ;;
-              fail) status="✗" ;;
-              skip) status="⊘" ;;
+              pass) status="passed" ;;
+              fail) status="failed" ;;
+              skip) status="skipped" ;;
               *) status="$action" ;;
             esac
             # Format duration
