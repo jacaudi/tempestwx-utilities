@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tempestwx-utilities/internal/config"
+	"tempestwx-utilities/internal/logging"
 	"tempestwx-utilities/internal/postgres"
 	"tempestwx-utilities/internal/prometheus"
 	"tempestwx-utilities/internal/sink"
@@ -25,7 +26,16 @@ import (
 
 // Old collector implementation removed - now using MetricsSink
 
+// fatal logs msg at error level with the given structured attributes and exits
+// the process. It replaces the previous log.Fatal/log.Fatalf usage.
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
+}
+
 func main() {
+	logging.Init()
+
 	ctx, done := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer done()
 
@@ -40,7 +50,7 @@ func main() {
 		if enablePushgateway {
 			pushURL := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
 			if pushURL == "" {
-				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true")
+				fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true")
 			}
 			jobName := os.Getenv("JOB_NAME")
 			if jobName == "" {
@@ -59,7 +69,7 @@ func main() {
 			}
 			metricsServer := prometheus.NewMetricsServer(port)
 			if err := metricsServer.Start(); err != nil {
-				log.Fatalf("failed to start metrics server: %v", err)
+				fatal("failed to start metrics server", "err", err)
 			}
 			metricsSink.AddWriter(metricsServer)
 		}
@@ -70,21 +80,21 @@ func main() {
 	if enablePostgres {
 		dbConfig, err := config.GetDatabaseConfig()
 		if err != nil {
-			log.Fatalf("database configuration error: %v", err)
+			fatal("database configuration error", "err", err)
 		}
 		if dbConfig == "" {
-			log.Fatal("POSTGRES_URL or POSTGRES_HOST is required when ENABLE_POSTGRES is true")
+			fatal("POSTGRES_URL or POSTGRES_HOST is required when ENABLE_POSTGRES is true")
 		}
 		pgWriter, err := postgres.NewPostgresWriter(ctx, dbConfig)
 		if err != nil {
-			log.Fatalf("failed to initialize postgres: %v", err)
+			fatal("failed to initialize postgres", "err", err)
 		}
 		metricsSink.AddWriter(pgWriter)
 	}
 
 	// Require at least one writer
 	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or ENABLE_POSTGRES")
+		fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or ENABLE_POSTGRES")
 	}
 
 	// Choose operational mode
@@ -97,27 +107,27 @@ func main() {
 
 func listenAndPushWithSink(ctx context.Context, metricsSink *sink.MetricsSink) {
 	logUDP, _ := strconv.ParseBool(os.Getenv("LOG_UDP"))
-	log.Printf("starting UDP listener mode")
+	slog.Info("starting UDP listener mode")
 
 	if err := listen(ctx, func(b []byte, addr *net.UDPAddr) error {
 		if logUDP {
-			log.Printf("UDP in: %s", string(b))
+			slog.Info("received UDP packet", "payload", string(b))
 		}
 
 		report, err := tempestudp.ParseReport(b)
 		if err != nil {
-			log.Printf("error parsing report from %s: %s", addr, err)
+			slog.Warn("error parsing report", "addr", addr, "err", err)
 			return nil
 		}
 
 		// Send report to all configured writers
 		if err := metricsSink.SendReport(ctx, report); err != nil {
-			log.Printf("error sending report: %v", err)
+			slog.Error("error sending report", "err", err)
 		}
 
 		return nil
 	}); err != nil {
-		log.Fatal(err)
+		fatal("UDP listener error", "err", err)
 	}
 }
 
@@ -132,7 +142,7 @@ func listen(ctx context.Context, rx func([]byte, *net.UDPAddr) error) error {
 		return err
 	}
 	defer sock.Close()
-	log.Printf("listening on UDP :50222")
+	slog.Info("listening on UDP", "port", 50222)
 
 	readErr := make(chan error, 1)
 
@@ -168,17 +178,17 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 	client := tempestapi.NewClient(token)
 	stations, err := client.ListStations(ctx)
 	if err != nil {
-		log.Fatalf("error listing stations: %v", err)
+		fatal("error listing stations", "err", err)
 	}
 
 	if len(stations) == 0 {
-		log.Fatalf("no stations found")
+		fatal("no stations found")
 	}
 
-	log.Printf("found stations:")
+	slog.Info("found stations", "count", len(stations))
 	var startAt time.Time
 	for _, station := range stations {
-		log.Printf("  - %s (station #%d)", station.Name, station.StationID)
+		slog.Info("station", "name", station.Name, "station_id", station.StationID)
 		if startAt.IsZero() || startAt.Before(station.CreatedAt) {
 			startAt = station.CreatedAt
 		}
@@ -196,10 +206,10 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 			next = cur.AddDate(0, 0, 1)
 
 			for _, station := range stations {
-				log.Printf("fetching %s starting %s", station.Name, cur.Format(time.RFC3339))
+				slog.Info("fetching observations", "station", station.Name, "start", cur.Format(time.RFC3339))
 				stationMetrics, err := client.GetObservations(ctx, station, cur, next)
 				if err != nil {
-					log.Fatalf("error fetching %#v for %d-%d: %v", station, cur.Unix(), next.Unix(), err)
+					fatal("error fetching observations", "station", station.Name, "from", cur.Unix(), "to", next.Unix(), "err", err)
 				}
 				metrics = append(metrics, stationMetrics...)
 			}
@@ -210,22 +220,22 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 		}
 
 		// Send to sink (Postgres)
-		log.Printf("sending %d metrics to sink", len(metrics))
+		slog.Info("sending metrics to sink", "count", len(metrics))
 		if err := metricsSink.SendMetrics(ctx, metrics); err != nil {
-			log.Printf("error sending metrics: %v", err)
+			slog.Error("error sending metrics", "err", err)
 		}
 
 		// Optionally write to .gz files
 		if keepFiles {
 			filename := fmt.Sprintf("tempest_%03d.txt.gz", fileNum)
 			if err := writeMetricsToFile(filename, metrics); err != nil {
-				log.Fatalf("error writing file: %v", err)
+				fatal("error writing file", "err", err)
 			}
 			fileNum++
 		}
 	}
 
-	log.Printf("export complete")
+	slog.Info("export complete")
 }
 
 func writeMetricsToFile(filename string, metrics []promclient.Metric) error {
@@ -239,7 +249,7 @@ func writeMetricsToFile(filename string, metrics []promclient.Metric) error {
 		return fmt.Errorf("gather metrics: %w", err)
 	}
 
-	log.Printf("writing %s", filename)
+	slog.Info("writing metrics file", "filename", filename)
 	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)

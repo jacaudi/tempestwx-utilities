@@ -3,7 +3,7 @@ package prometheus
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -65,9 +65,9 @@ func (s *MetricsServer) Start() error {
 	s.shutdownWg.Add(1)
 	go func() {
 		defer s.shutdownWg.Done()
-		log.Printf("metrics: starting HTTP server on port %s", s.port)
+		slog.Info("metrics: starting HTTP server", "port", s.port)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("metrics: server error: %v", err)
+			slog.Error("metrics: server error", "err", err)
 		}
 	}()
 	return nil
@@ -96,12 +96,12 @@ func (s *MetricsServer) Close() error {
 	defer cancel()
 
 	if err := s.server.Shutdown(ctx); err != nil {
-		log.Printf("metrics: shutdown error: %v", err)
+		slog.Error("metrics: shutdown error", "err", err)
 		return err
 	}
 
 	s.shutdownWg.Wait()
-	log.Printf("metrics: server closed")
+	slog.Info("metrics: server closed")
 	return nil
 }
 

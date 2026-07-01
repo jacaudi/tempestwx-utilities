@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -105,7 +105,7 @@ func (c Client) GetObservations(ctx context.Context, station Station, startAt ti
 	}
 	report, err := tempestudp.ParseReport(bytes)
 	if err != nil {
-		log.Printf("read %s", string(bytes))
+		slog.Warn("tempestapi: failed to parse report", "body", string(bytes), "err", err)
 		return nil, err
 	}
 
@@ -113,7 +113,7 @@ func (c Client) GetObservations(ctx context.Context, station Station, startAt ti
 	case *tempestudp.TempestObservationReport:
 		r.SerialNumber = station.serialNumber
 	default:
-		log.Fatalf("unhandled report type")
+		return nil, fmt.Errorf("tempestapi: unhandled report type %T", report)
 	}
 
 	metrics := report.Metrics()

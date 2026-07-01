@@ -2,7 +2,7 @@ package sink
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 
 	"tempestwx-utilities/internal/tempestudp"
@@ -68,7 +68,7 @@ func (s *MetricsSink) SendReport(ctx context.Context, report tempestudp.Report) 
 		go func(writer MetricsWriter) {
 			defer wg.Done()
 			if err := writer.WriteReport(ctx, report); err != nil {
-				log.Printf("writer error (report): %v", err)
+				slog.Error("sink: writer error handling report", "err", err)
 			}
 		}(w)
 	}
@@ -91,7 +91,7 @@ func (s *MetricsSink) SendMetrics(ctx context.Context, metrics []prometheus.Metr
 		go func(writer MetricsWriter) {
 			defer wg.Done()
 			if err := writer.WriteMetrics(ctx, metrics); err != nil {
-				log.Printf("writer error (metrics): %v", err)
+				slog.Error("sink: writer error handling metrics", "err", err)
 			}
 		}(w)
 	}
@@ -115,12 +115,12 @@ func (s *MetricsSink) Close() error {
 
 			// Flush first
 			if err := writer.Flush(s.ctx); err != nil {
-				log.Printf("writer flush error: %v", err)
+				slog.Error("sink: writer flush error", "err", err)
 			}
 
 			// Then close
 			if err := writer.Close(); err != nil {
-				log.Printf("writer close error: %v", err)
+				slog.Error("sink: writer close error", "err", err)
 			}
 		}(w)
 	}
