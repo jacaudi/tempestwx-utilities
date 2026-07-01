@@ -41,6 +41,28 @@ The exporter can optionally write metrics to PostgreSQL in addition to (or inste
 
 When configured, the exporter automatically creates and maintains typed tables for observations, rapid wind data, hub status, and events.
 
+### Display JSON API (Optional)
+
+In UDP mode the exporter can expose a small read-only JSON API that serves the
+latest observation and station metadata to the [`tempest-display`](https://github.com/jacaudi/tempest-display)
+SPA. Enable it with:
+
+* `ENABLE_API`: set to `true` to start the API server
+* `API_PORT`: listen port (default `8080`)
+
+Endpoints:
+
+* `GET /api/observation` — latest `obs_st` observation as JSON (wind, pressure,
+  temperature, humidity, illuminance, UV, solar, rain, lightning, battery, plus
+  derived dew point, wet-bulb, heat index, wind chill and "feels like"). Returns
+  `503` until the first report arrives.
+* `GET /api/station` — station metadata. The live `serial_number` and
+  `firmware_revision` come from incoming reports; the descriptive fields are
+  supplied via optional environment variables: `STATION_ID`, `STATION_NAME`,
+  `STATION_LATITUDE`, `STATION_LONGITUDE`, `STATION_ELEVATION`,
+  `STATION_TIMEZONE`, `DEVICE_ID`.
+* `GET /health` — liveness probe.
+
 See `CLAUDE.md` for detailed configuration options and Docker Compose examples
 
 ## Source Credit

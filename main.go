@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"tempestwx-utilities/internal/apiserver"
 	"tempestwx-utilities/internal/config"
 	"tempestwx-utilities/internal/postgres"
 	"tempestwx-utilities/internal/prometheus"
@@ -62,6 +63,20 @@ func main() {
 				log.Fatalf("failed to start metrics server: %v", err)
 			}
 			metricsSink.AddWriter(metricsServer)
+		}
+
+		// Configure the display JSON API server (/api/station, /api/observation)
+		enableAPI, _ := strconv.ParseBool(os.Getenv("ENABLE_API"))
+		if enableAPI {
+			port := os.Getenv("API_PORT")
+			if port == "" {
+				port = "8080"
+			}
+			apiServer := apiserver.NewServer(port, apiserver.StationMetaFromEnv())
+			if err := apiServer.Start(); err != nil {
+				log.Fatalf("failed to start API server: %v", err)
+			}
+			metricsSink.AddWriter(apiServer)
 		}
 	}
 
