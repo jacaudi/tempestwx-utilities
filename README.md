@@ -41,6 +41,16 @@ The exporter can optionally write metrics to PostgreSQL in addition to (or inste
 
 When configured, the exporter automatically creates and maintains typed tables for observations, rapid wind data, hub status, and events.
 
+### Logging (Optional)
+
+The exporter logs via the standard library's structured logger (`log/slog`). Two
+environment variables control verbosity and output format:
+
+* `LOG_LEVEL`: `debug`, `info`, `warn`, or `error` (default: `info`)
+* `LOG_FORMAT`: `text` or `json` (default: `text`)
+
+Unrecognized values fall back to the defaults.
+
 See `CLAUDE.md` for detailed configuration options and Docker Compose examples
 
 ## Source Credit

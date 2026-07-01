@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -121,7 +121,7 @@ func NewPostgresWriter(ctx context.Context, databaseURL string) (*PostgresWriter
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
-	log.Printf("postgres: connected, schema ready")
+	slog.Info("postgres: connected, schema ready")
 
 	// Initialize writer
 	w := &PostgresWriter{
@@ -517,7 +517,7 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			log.Printf("postgres: observation batch channel full, dropping")
+			slog.Warn("postgres: observation batch channel full, dropping")
 		}
 	}
 
@@ -545,7 +545,7 @@ func (w *PostgresWriter) handleRapidWindReport(ctx context.Context, r *tempestud
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		log.Printf("postgres: rapid_wind batch channel full, dropping")
+		slog.Warn("postgres: rapid_wind batch channel full, dropping")
 	}
 
 	return nil
@@ -574,7 +574,7 @@ func (w *PostgresWriter) handleHubStatusReport(ctx context.Context, r *tempestud
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		log.Printf("postgres: hub_status batch channel full, dropping")
+		slog.Warn("postgres: hub_status batch channel full, dropping")
 	}
 
 	return nil
@@ -602,7 +602,7 @@ func (w *PostgresWriter) handleRainStartReport(ctx context.Context, r *tempestud
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		log.Printf("postgres: event batch channel full, dropping")
+		slog.Warn("postgres: event batch channel full, dropping")
 	}
 
 	return nil
@@ -632,7 +632,7 @@ func (w *PostgresWriter) handleLightningStrikeReport(ctx context.Context, r *tem
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		log.Printf("postgres: event batch channel full, dropping")
+		slog.Warn("postgres: event batch channel full, dropping")
 	}
 
 	return nil
@@ -652,7 +652,7 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 	for _, metric := range metrics {
 		var dto io_prometheus_client.Metric
 		if err := metric.Write(&dto); err != nil {
-			log.Printf("postgres: failed to write metric: %v", err)
+			slog.Error("postgres: failed to write metric", "err", err)
 			continue
 		}
 
@@ -754,7 +754,7 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			log.Printf("postgres: observation batch channel full during WriteMetrics, dropping")
+			slog.Warn("postgres: observation batch channel full during WriteMetrics, dropping")
 		}
 	}
 
@@ -779,24 +779,23 @@ func (w *PostgresWriter) flushWithRetry(flushFn func() error, tableName string, 
 			return
 		}
 
-		log.Printf("postgres: failed to write %d rows to %s (attempt %d/%d): %v",
-			batchSize, tableName, attempt, w.maxRetries, err)
+		slog.Error("postgres: failed to write rows",
+			"rows", batchSize, "table", tableName, "attempt", attempt, "max_attempts", w.maxRetries, "err", err)
 
 		if !isRetryable(err) {
-			log.Printf("postgres: non-retryable error for %s, dropping batch: %v",
-				tableName, err)
+			slog.Error("postgres: non-retryable error, dropping batch", "table", tableName, "err", err)
 			return
 		}
 
 		if attempt == w.maxRetries {
-			log.Printf("postgres: max retries exceeded for %s, dropping %d rows", tableName, batchSize)
+			slog.Error("postgres: max retries exceeded, dropping batch", "table", tableName, "rows", batchSize)
 			return
 		}
 
 		// Check if context is still valid before sleeping
 		select {
 		case <-w.ctx.Done():
-			log.Printf("postgres: context cancelled during retry for %s, dropping batch", tableName)
+			slog.Warn("postgres: context cancelled during retry, dropping batch", "table", tableName)
 			return
 		case <-time.After(backoff):
 			// Continue to next attempt
@@ -864,7 +863,7 @@ func (w *PostgresWriter) Close() error {
 
 	// Close connection pool
 	w.pool.Close()
-	log.Printf("postgres: closed")
+	slog.Info("postgres: closed")
 
 	return nil
 }
