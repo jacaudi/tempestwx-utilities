@@ -3,7 +3,7 @@
 Multi-backend data utilities for [Tempest weather stations](https://weatherflow.com/tempest-home-weather-system/).
 
 This tool provides:
-- **UDP Mode**: Listens for [Tempest UDP broadcasts](https://weatherflow.github.io/Tempest/api/udp.html) and forwards to Prometheus push gateway and/or PostgreSQL
+- **UDP Mode**: Listens for [Tempest UDP broadcasts](https://weatherflow.github.io/Tempest/api/udp.html) and persists to a local **SQLite** database by default, with an optional Prometheus push gateway / scrape endpoint and/or PostgreSQL
 - **API Export Mode**: Fetches historical data via REST API and stores to PostgreSQL and/or compressed files
 
 ## Quickstart
@@ -31,6 +31,15 @@ Minimal, via environment variables:
   service](https://docs.victoriametrics.com/?highlight=exposition#how-to-import-data-in-prometheus-exposition-format)
 
 * `JOB_NAME`: the value for the `job` label, defaulting to `"tempest"`
+
+### SQLite Storage (default)
+
+In UDP mode the exporter persists observations to a local **SQLite** database by default (pure-Go `modernc.org/sqlite`, no CGO), in WAL mode suited to [Litestream](https://litestream.io/) streaming backup.
+
+* `SQLITE_PATH`: path to the database file (default: `/data/tempest.db`)
+* Optional tuning: `SQLITE_BATCH_SIZE` (default `100`), `SQLITE_FLUSH_INTERVAL` (default `10s`), `SQLITE_BUSY_TIMEOUT` in ms (default `5000`)
+
+`/data` must be a writable mount — if the database cannot be opened, the process exits on startup. Set `ENABLE_POSTGRES=true` to use PostgreSQL instead; both can run together (fan-out). SQLite is not written in API-export mode. See `CLAUDE.md` for the full schema and a Litestream sidecar example.
 
 ### PostgreSQL Storage (Optional)
 
