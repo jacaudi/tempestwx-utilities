@@ -6,6 +6,13 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	// Register the pure-Go SQLite driver (CGO-free) under the name "sqlite".
+	// This blank import MUST live in production code, not only in _test.go
+	// files: without it the compiled binary panics at runtime with
+	// `sql: unknown driver "sqlite"` even though tests pass (test files can
+	// register it themselves). Do not remove.
+	_ "modernc.org/sqlite"
 )
 
 const driverName = "sqlite" // modernc.org/sqlite registers this name

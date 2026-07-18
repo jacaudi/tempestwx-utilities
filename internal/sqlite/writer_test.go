@@ -10,7 +10,6 @@ import (
 	"tempestwx-utilities/internal/tempestudp"
 
 	"github.com/google/uuid"
-	_ "modernc.org/sqlite"
 )
 
 // newTestDB opens a fresh, migrated SQLite DB in a t.TempDir() for use by

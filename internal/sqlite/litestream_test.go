@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"tempestwx-utilities/internal/tempestudp"
-
-	_ "modernc.org/sqlite"
 )
 
 // selectAllObservationsSQL mirrors selectLatestObservationSQL's column list
