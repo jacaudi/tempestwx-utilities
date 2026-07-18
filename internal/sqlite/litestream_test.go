@@ -141,14 +141,15 @@ func TestLitestreamRestore_FileReplica(t *testing.T) {
 			5,                      // report_interval
 		}
 		if i == n-1 {
-			// One row deliberately has a short obs slice (only the fields
-			// through pressure/temp_air/humidity/illuminance/uv_index/
-			// irradiance/rain_rate) so its nullable columns
-			// (wind_sample_interval, precip_type, lightning_*, battery,
-			// report_interval, temp_wetbulb) round-trip as genuine SQL NULL
-			// rather than every restored row being all-non-NULL — otherwise
-			// this test's "field-for-field" comparison never exercises the
-			// nil-pointer branch of Observation's nullable fields.
+			// One row deliberately has a short obs slice (only indices 0..12,
+			// through rain_rate) so the columns that require a longer slice —
+			// precip_type (needs len>=14), lightning_distance/lightning_strike_count
+			// (len>=16), battery (len>=17), report_interval (len>=18) — round-trip
+			// as genuine SQL NULL, rather than every restored row being all-non-NULL.
+			// Otherwise this test's "field-for-field" comparison never exercises the
+			// nil-pointer branch of Observation's nullable fields. (wind_sample_interval
+			// and temp_wetbulb stay non-NULL here: index 5 is present, and wet-bulb is
+			// computed from the present temp_air/humidity/pressure.)
 			obs = obs[:13]
 		}
 		report := &tempestudp.TempestObservationReport{

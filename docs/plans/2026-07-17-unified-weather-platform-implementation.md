@@ -38,7 +38,7 @@
 
 Every task's requirements implicitly include this section. Values are copied verbatim from the design (§ noted).
 
-- **Go version floor:** module `go 1.24.0`, toolchain `go1.25.5`. Use modern Go idioms up to 1.24 (`any`, `slices`/`maps`/`cmp`, `min`/`max`, `for range n`, `errors.Is/As`, `t.Context()` in tests, `omitzero` JSON tags for time/duration/struct/slice/map fields, `b.Loop()` in benchmarks). (go.mod)
+- **Go version floor:** module `go 1.25.0` (ratified 2026-07-18 during WS3 — bumped from `1.24.0` when `go mod tidy` pulled newer transitive `modernc.org/libc`/`golang.org/x/sys`; not a hard floor of `modernc.org/sqlite@v1.34.4`, but build-safe and CGO-free-preserving, so accepted rather than pinned back), toolchain `go1.26.1`. Use modern Go idioms (`any`, `slices`/`maps`/`cmp`, `min`/`max`, `for range n`, `errors.Is/As`, `t.Context()` in tests, `omitzero` JSON tags for time/duration/struct/slice/map fields, `b.Loop()` in benchmarks). (go.mod)
 - **CGO-free static build is load-bearing:** `CGO_ENABLED=0` MUST hold. SQLite driver MUST be `modernc.org/sqlite` — never `mattn/go-sqlite3` (CGO). This preserves the praised static Chainguard image. (design §10, O6)
 - **Radar product default:** `N0B` (super-res base reflectivity), fall back to `N0Q` (legacy) if a site lacks a recent N0B object. (design §9, O2)
 - **Bespoke Prometheus path:** deprecate-then-remove (keep for one release, log a deprecation warning) — do NOT remove-now. (design §8, O4)
