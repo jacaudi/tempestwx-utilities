@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -660,4 +661,183 @@ func (w *Writer) insertEvents(ctx context.Context, batch []eventRow) {
 	if err != nil {
 		slog.Error("sqlite: insert events failed", "error", err, "rows", len(batch))
 	}
+}
+
+// ErrObservationNotFound is returned by LatestObservation when serial has no
+// rows in tempest_observations.
+var ErrObservationNotFound = errors.New("sqlite: no observation found for serial")
+
+// Observation is a single tempest_observations row exactly as stored: raw SI
+// values, no derived fields. Contract C's GET /api/observations/current is
+// fed by this struct, but computing feelsLike/dewPoint/wetBulbTemperature/
+// heatIndex/windChill/pressureTrend from it is WS1's job (analytics), not
+// this package's (storage) -- building that here would be YAGNI. Nullable
+// columns (the same set observationRow treats as nullable, since only this
+// writer ever populates the table) are pointers; nil means SQL NULL.
+type Observation struct {
+	ID                   string
+	SerialNumber         string
+	Timestamp            int64
+	WindLull             float64
+	WindAvg              float64
+	WindGust             float64
+	WindDirection        float64
+	WindSampleInterval   *int64
+	Pressure             float64
+	TempAir              float64
+	TempWetbulb          *float64
+	Humidity             float64
+	Illuminance          float64
+	UVIndex              float64
+	Irradiance           float64
+	RainRate             float64
+	PrecipType           *int64
+	LightningDistance    *float64
+	LightningStrikeCount *int64
+	Battery              *float64
+	ReportInterval       *int64
+}
+
+const selectLatestObservationSQL = `
+	SELECT id, serial_number, timestamp,
+		wind_lull, wind_avg, wind_gust, wind_direction, wind_sample_interval,
+		pressure, temp_air, temp_wetbulb, humidity,
+		illuminance, uv_index, irradiance, rain_rate, precip_type,
+		lightning_distance, lightning_strike_count,
+		battery, report_interval
+	FROM tempest_observations
+	WHERE serial_number = ?
+	ORDER BY timestamp DESC
+	LIMIT 1
+`
+
+// LatestObservation returns the newest tempest_observations row for serial
+// (ORDER BY timestamp DESC LIMIT 1). Returns ErrObservationNotFound,
+// checkable via errors.Is, when serial has no rows.
+func (w *Writer) LatestObservation(ctx context.Context, serial string) (Observation, error) {
+	var (
+		obs                                     Observation
+		windSampleInterval, precipType          sql.NullInt64
+		lightningStrikeCount, reportInterval    sql.NullInt64
+		tempWetbulb, lightningDistance, battery sql.NullFloat64
+	)
+
+	row := w.db.QueryRowContext(ctx, selectLatestObservationSQL, serial)
+	err := row.Scan(
+		&obs.ID, &obs.SerialNumber, &obs.Timestamp,
+		&obs.WindLull, &obs.WindAvg, &obs.WindGust, &obs.WindDirection, &windSampleInterval,
+		&obs.Pressure, &obs.TempAir, &tempWetbulb, &obs.Humidity,
+		&obs.Illuminance, &obs.UVIndex, &obs.Irradiance, &obs.RainRate, &precipType,
+		&lightningDistance, &lightningStrikeCount,
+		&battery, &reportInterval,
+	)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Observation{}, fmt.Errorf("%w: %s", ErrObservationNotFound, serial)
+	case err != nil:
+		return Observation{}, fmt.Errorf("query latest observation: %w", err)
+	}
+
+	if windSampleInterval.Valid {
+		obs.WindSampleInterval = &windSampleInterval.Int64
+	}
+	if tempWetbulb.Valid {
+		obs.TempWetbulb = &tempWetbulb.Float64
+	}
+	if precipType.Valid {
+		obs.PrecipType = &precipType.Int64
+	}
+	if lightningDistance.Valid {
+		obs.LightningDistance = &lightningDistance.Float64
+	}
+	if lightningStrikeCount.Valid {
+		obs.LightningStrikeCount = &lightningStrikeCount.Int64
+	}
+	if battery.Valid {
+		obs.Battery = &battery.Float64
+	}
+	if reportInterval.Valid {
+		obs.ReportInterval = &reportInterval.Int64
+	}
+
+	return obs, nil
+}
+
+// historyFieldColumns is the allowlist mapping an API-level history field
+// name to its tempest_observations column, covering the numeric columns the
+// UI charts. HistoryPoints looks field up here BEFORE building any query --
+// an unknown field returns an error and no query ever runs. The resolved
+// column value (never the raw field argument) is the only thing formatted
+// into the query text, which is what makes that safe from SQL injection.
+var historyFieldColumns = map[string]string{
+	"wind_lull":          "wind_lull",
+	"wind_avg":           "wind_avg",
+	"wind_gust":          "wind_gust",
+	"wind_direction":     "wind_direction",
+	"pressure":           "pressure",
+	"temp_air":           "temp_air",
+	"temp_wetbulb":       "temp_wetbulb",
+	"humidity":           "humidity",
+	"illuminance":        "illuminance",
+	"uv_index":           "uv_index",
+	"irradiance":         "irradiance",
+	"rain_rate":          "rain_rate",
+	"battery":            "battery",
+	"lightning_distance": "lightning_distance",
+}
+
+// Point is a single (t, v) sample from HistoryPoints. Field names and JSON
+// tags mirror Contract C's `{"points":[{"t":..,"v":..}]}` wire shape (design
+// §11) so that shape is single-sourced here rather than redeclared by every
+// consumer.
+type Point struct {
+	T int64   `json:"t"`
+	V float64 `json:"v"`
+}
+
+// HistoryPoints returns every tempest_observations sample for field with a
+// timestamp in [from, to], ordered by timestamp ascending. field must be a
+// key of historyFieldColumns; an unknown field (including anything
+// SQL-injection-shaped) is rejected before any query is built or executed.
+// Rows where the column is SQL NULL (e.g. temp_wetbulb before wet-bulb
+// convergence) are omitted rather than reported as a misleading 0.
+func (w *Writer) HistoryPoints(ctx context.Context, field string, from, to int64) ([]Point, error) {
+	column, ok := historyFieldColumns[field]
+	if !ok {
+		return nil, fmt.Errorf("sqlite: unknown history field %q", field)
+	}
+
+	query := fmt.Sprintf( //nolint:gosec // column comes from historyFieldColumns' value, never the raw field argument
+		`SELECT timestamp, %s FROM tempest_observations WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp`,
+		column,
+	)
+
+	rows, err := w.db.QueryContext(ctx, query, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query history points: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	// Initialized non-nil so a query with zero matches marshals to JSON `[]`
+	// rather than `null` -- Contract C's {"points":[...]} shape (design §11).
+	points := []Point{}
+	for rows.Next() {
+		var (
+			t int64
+			v sql.NullFloat64
+		)
+		if err := rows.Scan(&t, &v); err != nil {
+			return nil, fmt.Errorf("scan history point: %w", err)
+		}
+		if !v.Valid {
+			continue
+		}
+		points = append(points, Point{T: t, V: v.Float64})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate history points: %w", err)
+	}
+	return points, nil
 }

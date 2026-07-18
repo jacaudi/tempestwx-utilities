@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -404,4 +405,189 @@ func TestWriter_EventsNotDroppedUnderBackpressure(t *testing.T) {
 	case <-time.After(eventBlockTimeout):
 		t.Fatal("enqueueEvent did not unblock once the channel had room")
 	}
+}
+
+// obsReport builds a minimal valid TempestObservationReport (len(ob) == 13,
+// the smallest length handleObservationReport accepts) with the given
+// serial, timestamp, and temp_air value -- the shared shape every Task 3.4
+// test below needs, just varied by the three fields each test actually
+// cares about.
+func obsReport(serial string, ts int64, tempAir float64) *tempestudp.TempestObservationReport {
+	return &tempestudp.TempestObservationReport{
+		SerialNumber: serial,
+		Obs: [][]float64{
+			{float64(ts), 1, 1, 1, 1, 1, 1013, tempAir, 50, 100, 1, 10, 0},
+		},
+	}
+}
+
+// TestWriter_DrainOnClose proves Close(ctx) drains every row still buffered
+// in w.rows and flushes it to disk before returning -- not just whatever was
+// already appended to a local batch slice. batchSize/flushInterval are set
+// so nothing flushes except the drain-on-Close path itself: batchSize is
+// larger than the row count and flushInterval's ticker never fires during
+// the test.
+func TestWriter_DrainOnClose(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "drain.db")
+	db, err := Open(t.Context(), dbPath, Config{BusyTimeout: 5000 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	w := NewWriter(t.Context(), db, Config{BatchSize: 1000, FlushInterval: time.Hour})
+
+	const n = 25
+	for i := range n {
+		if err := w.WriteReport(t.Context(), obsReport("ST-DRAIN", 1700000100+int64(i), 20)); err != nil {
+			t.Fatalf("WriteReport %d: %v", i, err)
+		}
+	}
+
+	// Close with a fresh ctx (not one derived from the writer's construction
+	// ctx) -- proves the drain uses the live ctx passed to Close, per
+	// writer.go's shutdownCtx comment.
+	if err := w.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	// Reopen the DB at the same path with a brand-new *sql.DB/connection --
+	// this is what proves the rows genuinely reached disk during Close's
+	// drain, rather than just an in-process buffer.
+	reopened, err := Open(t.Context(), dbPath, Config{BusyTimeout: 5000 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close reopened db: %v", err)
+		}
+	}()
+
+	var count int
+	if err := reopened.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM tempest_observations WHERE serial_number = ?`, "ST-DRAIN",
+	).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != n {
+		t.Fatalf("persisted rows after Close = %d, want %d", count, n)
+	}
+}
+
+// TestReader_LatestObservation proves LatestObservation returns the newest
+// row by timestamp (not insertion order), with the raw stored columns
+// unmodified -- and a clear sentinel error when the serial has no rows.
+func TestReader_LatestObservation(t *testing.T) {
+	t.Run("returns_newest", func(t *testing.T) {
+		w := newTestWriter(t)
+		ctx := t.Context()
+
+		// Insertion order deliberately does not match timestamp order.
+		for _, ts := range []int64{1700000300, 1700000100, 1700000200} {
+			if err := w.WriteReport(ctx, obsReport("ST-LATEST", ts, 20)); err != nil {
+				t.Fatalf("WriteReport: %v", err)
+			}
+		}
+		if err := w.Flush(ctx); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+
+		got, err := w.LatestObservation(ctx, "ST-LATEST")
+		if err != nil {
+			t.Fatalf("LatestObservation: %v", err)
+		}
+		if got.Timestamp != 1700000300 {
+			t.Errorf("Timestamp = %d, want 1700000300 (the newest)", got.Timestamp)
+		}
+		if got.SerialNumber != "ST-LATEST" {
+			t.Errorf("SerialNumber = %q, want ST-LATEST", got.SerialNumber)
+		}
+		if got.TempAir != 20 {
+			t.Errorf("TempAir = %v, want 20", got.TempAir)
+		}
+	})
+
+	t.Run("no_rows_returns_sentinel", func(t *testing.T) {
+		w := newTestWriter(t)
+		_, err := w.LatestObservation(t.Context(), "ST-MISSING")
+		if !errors.Is(err, ErrObservationNotFound) {
+			t.Fatalf("err = %v, want ErrObservationNotFound", err)
+		}
+	})
+}
+
+// TestReader_HistoryPoints proves HistoryPoints returns in-range points
+// ordered by timestamp for an allowlisted field, and rejects an unknown or
+// SQL-injection-shaped field before any query executes.
+func TestReader_HistoryPoints(t *testing.T) {
+	t.Run("returns_in_range_points_ordered", func(t *testing.T) {
+		w := newTestWriter(t)
+		ctx := t.Context()
+
+		// 100 and 400 are outside the [200, 300] query range below.
+		for _, sample := range []struct {
+			ts      int64
+			tempAir float64
+		}{
+			{1700000100, 15},
+			{1700000300, 25},
+			{1700000200, 20}, // inserted out of order
+			{1700000400, 30},
+		} {
+			if err := w.WriteReport(ctx, obsReport("ST-HIST", sample.ts, sample.tempAir)); err != nil {
+				t.Fatalf("WriteReport: %v", err)
+			}
+		}
+		if err := w.Flush(ctx); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+
+		got, err := w.HistoryPoints(ctx, "temp_air", 1700000200, 1700000300)
+		if err != nil {
+			t.Fatalf("HistoryPoints: %v", err)
+		}
+		want := []Point{{T: 1700000200, V: 20}, {T: 1700000300, V: 25}}
+		if len(got) != len(want) {
+			t.Fatalf("HistoryPoints returned %d points, want %d: %+v", len(got), len(want), got)
+		}
+		for i, p := range want {
+			if got[i] != p {
+				t.Errorf("point %d = %+v, want %+v", i, got[i], p)
+			}
+		}
+	})
+
+	t.Run("no_matches_returns_empty_not_nil_slice", func(t *testing.T) {
+		w := newTestWriter(t)
+
+		got, err := w.HistoryPoints(t.Context(), "temp_air", 0, 1)
+		if err != nil {
+			t.Fatalf("HistoryPoints: %v", err)
+		}
+		if got == nil {
+			t.Fatal("HistoryPoints returned a nil slice for zero matches, want a non-nil empty slice (marshals to [] not null)")
+		}
+		if len(got) != 0 {
+			t.Fatalf("HistoryPoints returned %d points, want 0", len(got))
+		}
+	})
+
+	t.Run("unknown_field_rejected_before_query", func(t *testing.T) {
+		w := newTestWriter(t)
+		ctx := t.Context()
+
+		if _, err := w.HistoryPoints(ctx, "temp_air; DROP TABLE tempest_observations", 0, 1<<62); err == nil {
+			t.Fatal("HistoryPoints with a malicious field name returned nil error, want rejection")
+		}
+
+		// The table must still exist and be queryable -- proves no query
+		// ever ran with the unvalidated field string.
+		var count int
+		if err := w.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tempest_observations`).Scan(&count); err != nil {
+			t.Fatalf("tempest_observations unusable after rejected field: %v", err)
+		}
+	})
 }
