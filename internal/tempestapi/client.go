@@ -16,10 +16,14 @@ import (
 
 type Client struct {
 	token string
+	http  *http.Client
 }
 
-func NewClient(token string) Client {
-	return Client{token: token}
+func NewClient(token string) *Client {
+	return &Client{
+		token: token,
+		http:  &http.Client{Timeout: 30 * time.Second},
+	}
 }
 
 type Station struct {
@@ -30,17 +34,27 @@ type Station struct {
 	CreatedAt    time.Time
 }
 
-func (c Client) ListStations(ctx context.Context) ([]Station, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://swd.weatherflow.com/swd/rest/stations?token="+c.token, nil)
+func (c *Client) ListStations(ctx context.Context) ([]Station, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://swd.weatherflow.com/swd/rest/stations", nil)
 	if err != nil {
 		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("weatherflow API status %d", resp.StatusCode)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	var data struct {
 		Stations []struct {
@@ -58,8 +72,11 @@ func (c Client) ListStations(ctx context.Context) ([]Station, error) {
 			StatusMessage string `json:"status_message"`
 		} `json:"status"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, err
+	}
+	if data.Status.StatusCode != 0 {
+		return nil, fmt.Errorf("weatherflow status_code %d: %s", data.Status.StatusCode, data.Status.StatusMessage)
 	}
 
 	var out []Station
@@ -86,26 +103,31 @@ func (c Client) ListStations(ctx context.Context) ([]Station, error) {
 	return out, nil
 }
 
-func (c Client) GetObservations(ctx context.Context, station Station, startAt time.Time, endAt time.Time) ([]prometheus.Metric, error) {
-	url := fmt.Sprintf("https://swd.weatherflow.com/swd/rest/observations/device/%d?token=%s&time_start=%d&time_end=%d", station.deviceID, c.token, startAt.Unix(), endAt.Unix())
+func (c *Client) GetObservations(ctx context.Context, station Station, startAt time.Time, endAt time.Time) ([]prometheus.Metric, error) {
+	url := fmt.Sprintf("https://swd.weatherflow.com/swd/rest/observations/device/%d?time_start=%d&time_end=%d", station.deviceID, startAt.Unix(), endAt.Unix())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	bytes, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("weatherflow API status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return nil, err
 	}
-	report, err := tempestudp.ParseReport(bytes)
+	report, err := tempestudp.ParseReport(body)
 	if err != nil {
-		log.Printf("read %s", string(bytes))
+		log.Printf("read %s", string(body))
 		return nil, err
 	}
 
@@ -113,7 +135,7 @@ func (c Client) GetObservations(ctx context.Context, station Station, startAt ti
 	case *tempestudp.TempestObservationReport:
 		r.SerialNumber = station.serialNumber
 	default:
-		log.Fatalf("unhandled report type")
+		return nil, fmt.Errorf("unhandled report type %T", report)
 	}
 
 	metrics := report.Metrics()

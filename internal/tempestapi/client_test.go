@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -67,14 +69,11 @@ func TestListStations_Success_SingleStation(t *testing.T) {
 		}
 	}`
 
-	// Replace http.DefaultClient temporarily
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	stations, err := client.ListStations(context.Background())
 
 	if err != nil {
@@ -139,13 +138,11 @@ func TestListStations_Success_MultipleStations(t *testing.T) {
 		}
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	stations, err := client.ListStations(context.Background())
 
 	if err != nil {
@@ -205,13 +202,11 @@ func TestListStations_Success_MultipleDevicesPerStation(t *testing.T) {
 		}
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	stations, err := client.ListStations(context.Background())
 
 	if err != nil {
@@ -254,13 +249,11 @@ func TestListStations_NoSTDevice(t *testing.T) {
 		}
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	stations, err := client.ListStations(context.Background())
 
 	if err != nil {
@@ -282,13 +275,11 @@ func TestListStations_EmptyStations(t *testing.T) {
 		}
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	stations, err := client.ListStations(context.Background())
 
 	if err != nil {
@@ -340,13 +331,11 @@ func TestListStations_MixedValidAndInvalid(t *testing.T) {
 		}
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	stations, err := client.ListStations(context.Background())
 
 	if err != nil {
@@ -364,13 +353,11 @@ func TestListStations_MixedValidAndInvalid(t *testing.T) {
 }
 
 func TestListStations_InvalidJSON(t *testing.T) {
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, "invalid json{{{"),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	_, err := client.ListStations(context.Background())
 
 	if err == nil {
@@ -379,13 +366,11 @@ func TestListStations_InvalidJSON(t *testing.T) {
 }
 
 func TestListStations_HTTPError(t *testing.T) {
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		err: errors.New("network error"),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	_, err := client.ListStations(context.Background())
 
 	if err == nil {
@@ -394,13 +379,11 @@ func TestListStations_HTTPError(t *testing.T) {
 }
 
 func TestListStations_ContextCancellation(t *testing.T) {
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		err: context.Canceled,
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
@@ -427,13 +410,11 @@ func TestGetObservations_Success(t *testing.T) {
 		"firmware_revision": 143
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	station := Station{
 		Name:         "Test Station",
 		StationID:    12345,
@@ -474,13 +455,11 @@ func TestGetObservations_MultipleObservations(t *testing.T) {
 		"firmware_revision": 143
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	station := Station{
 		deviceID:     67890,
 		serialNumber: "ST-00012345",
@@ -498,13 +477,11 @@ func TestGetObservations_MultipleObservations(t *testing.T) {
 }
 
 func TestGetObservations_HTTPError(t *testing.T) {
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		err: errors.New("network error"),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	station := Station{deviceID: 67890, serialNumber: "ST-00012345"}
 
 	_, err := client.GetObservations(context.Background(), station, time.Now(), time.Now())
@@ -515,13 +492,11 @@ func TestGetObservations_HTTPError(t *testing.T) {
 }
 
 func TestGetObservations_InvalidJSON(t *testing.T) {
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, "not valid json"),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	station := Station{deviceID: 67890, serialNumber: "ST-00012345"}
 
 	_, err := client.GetObservations(context.Background(), station, time.Now(), time.Now())
@@ -531,17 +506,12 @@ func TestGetObservations_InvalidJSON(t *testing.T) {
 	}
 }
 
-// Note: We can't test the wrong report type case because the client uses log.Fatalf
-// which exits the process. This would require refactoring the client to return an error instead.
-
 func TestGetObservations_ContextCancellation(t *testing.T) {
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		err: context.Canceled,
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	station := Station{deviceID: 67890, serialNumber: "ST-00012345"}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -564,13 +534,11 @@ func TestGetObservations_EmptyObservations(t *testing.T) {
 		"firmware_revision": 143
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	station := Station{deviceID: 67890, serialNumber: "ST-00012345"}
 
 	metrics, err := client.GetObservations(context.Background(), station, time.Now(), time.Now())
@@ -611,13 +579,11 @@ func TestListStations_StationWithZeroDeviceID(t *testing.T) {
 		}
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	stations, err := client.ListStations(context.Background())
 
 	if err != nil {
@@ -652,13 +618,11 @@ func TestListStations_StationWithEmptySerialNumber(t *testing.T) {
 		}
 	}`
 
-	originalTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockRoundTripper{
+	client := NewClient("test-token")
+	client.http.Transport = &mockRoundTripper{
 		response: mockResponse(http.StatusOK, mockBody),
 	}
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("test-token")
 	stations, err := client.ListStations(context.Background())
 
 	if err != nil {
@@ -672,12 +636,14 @@ func TestListStations_StationWithEmptySerialNumber(t *testing.T) {
 }
 
 func TestGetObservations_URLParameters(t *testing.T) {
-	// Test that URL is constructed correctly with all parameters
+	// Test that URL is constructed correctly and auth is sent via header, not URL
 	var capturedURL string
+	var capturedAuth string
 
-	originalTransport := http.DefaultClient.Transport
-	mockTransport := mockRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	client := NewClient("my-secret-token")
+	client.http.Transport = mockRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		capturedURL = req.URL.String()
+		capturedAuth = req.Header.Get("Authorization")
 
 		mockResp := `{
 			"type": "obs_st",
@@ -689,10 +655,7 @@ func TestGetObservations_URLParameters(t *testing.T) {
 
 		return mockResponse(http.StatusOK, mockResp), nil
 	})
-	http.DefaultClient.Transport = mockTransport
-	defer func() { http.DefaultClient.Transport = originalTransport }()
 
-	client := NewClient("my-secret-token")
 	station := Station{
 		deviceID:     98765,
 		serialNumber: "ST-00098765",
@@ -706,12 +669,15 @@ func TestGetObservations_URLParameters(t *testing.T) {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
-	// Verify URL contains all required parameters
+	// Verify URL contains all required parameters, but never the token
 	if !strings.Contains(capturedURL, "device/98765") {
 		t.Errorf("URL should contain device ID 98765: %s", capturedURL)
 	}
-	if !strings.Contains(capturedURL, "token=my-secret-token") {
-		t.Errorf("URL should contain token: %s", capturedURL)
+	if strings.Contains(capturedURL, "token=") {
+		t.Errorf("URL must not contain a token query parameter: %s", capturedURL)
+	}
+	if capturedAuth != "Bearer my-secret-token" {
+		t.Errorf("Authorization header = %q, want %q", capturedAuth, "Bearer my-secret-token")
 	}
 	if !strings.Contains(capturedURL, "time_start=1609459000") {
 		t.Errorf("URL should contain start time: %s", capturedURL)
@@ -726,4 +692,119 @@ type mockRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f mockRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+// ============================================================================
+// Hardening Tests (F-H1..H4, F-MEDIUM)
+// ============================================================================
+
+// redirectTransport rewrites the outgoing request's scheme/host to point at a
+// local httptest.Server, so the real request built by the client (headers,
+// path, query) is delivered over the wire to a real server for inspection.
+type redirectTransport struct {
+	target *url.URL
+}
+
+func (t *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = t.target.Scheme
+	req.URL.Host = t.target.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// newRedirectingClient returns a Client whose requests are transparently
+// redirected to server, so tests can assert on the actual request the client
+// sends while getting a response from a real httptest.Server.
+func newRedirectingClient(token string, server *httptest.Server) *Client {
+	c := NewClient(token)
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		panic(err)
+	}
+	c.http.Transport = &redirectTransport{target: target}
+	return c
+}
+
+func TestClient_UsesBearerHeader_NotURLToken(t *testing.T) {
+	var gotAuth, gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"stations":[],"status":{"status_code":0,"status_message":"SUCCESS"}}`))
+	}))
+	defer server.Close()
+
+	client := newRedirectingClient("secret-token", server)
+
+	if _, err := client.ListStations(context.Background()); err != nil {
+		t.Fatalf("ListStations() error = %v", err)
+	}
+
+	if gotAuth != "Bearer secret-token" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer secret-token")
+	}
+	if strings.Contains(gotQuery, "token=") {
+		t.Errorf("request URL query %q must not contain a token parameter", gotQuery)
+	}
+}
+
+func TestClient_ReturnsErrorOn401(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := newRedirectingClient("secret-token", server)
+
+	if _, err := client.ListStations(context.Background()); err == nil {
+		t.Error("ListStations() error = nil, want error mentioning status 401")
+	} else if !strings.Contains(err.Error(), "401") {
+		t.Errorf("ListStations() error = %v, want it to mention status 401", err)
+	}
+
+	station := Station{deviceID: 1, serialNumber: "ST-1"}
+	if _, err := client.GetObservations(context.Background(), station, time.Now(), time.Now()); err == nil {
+		t.Error("GetObservations() error = nil, want error mentioning status 401")
+	} else if !strings.Contains(err.Error(), "401") {
+		t.Errorf("GetObservations() error = %v, want it to mention status 401", err)
+	}
+}
+
+func TestClient_HasTimeout(t *testing.T) {
+	client := NewClient("secret-token")
+
+	if client.http.Timeout != 30*time.Second {
+		t.Errorf("http.Timeout = %v, want %v", client.http.Timeout, 30*time.Second)
+	}
+}
+
+func TestClient_UnhandledReportType_ReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"type":"rapid_wind","serial_number":"ST-1","hub_sn":"HB-1","ob":[1609459200,1.2,180]}`))
+	}))
+	defer server.Close()
+
+	client := newRedirectingClient("secret-token", server)
+	station := Station{deviceID: 1, serialNumber: "ST-1"}
+
+	_, err := client.GetObservations(context.Background(), station, time.Now(), time.Now())
+	if err == nil {
+		t.Fatal("GetObservations() error = nil, want error for unhandled report type")
+	}
+}
+
+func TestClient_ChecksStatusCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"stations":[],"status":{"status_code":2,"status_message":"BAD TOKEN"}}`))
+	}))
+	defer server.Close()
+
+	client := newRedirectingClient("secret-token", server)
+
+	_, err := client.ListStations(context.Background())
+	if err == nil {
+		t.Fatal("ListStations() error = nil, want error for non-zero status_code")
+	}
+	if !strings.Contains(err.Error(), "2") {
+		t.Errorf("ListStations() error = %v, want it to mention status_code 2", err)
+	}
 }

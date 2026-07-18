@@ -29,3 +29,19 @@ func TestWetBulbTemperatureC(t *testing.T) {
 		})
 	}
 }
+
+// TestWetBulb_NonConvergentReturnsNaN verifies that inputs which never
+// satisfy the convergence tolerance return NaN instead of panicking.
+//
+// humidityPercent = -500 is physically impossible (relative humidity cannot
+// be negative), but a malformed/corrupt UDP broadcast could still deliver an
+// out-of-range value here. It drives eHumidity strongly negative while
+// eWetBulb stays positive, so the search's overshoot-correction step shrinks
+// toward zero without ever bringing |delta| under the 0.001 tolerance within
+// 10000 iterations.
+func TestWetBulb_NonConvergentReturnsNaN(t *testing.T) {
+	got := WetBulbTemperatureC(25, -500, 900)
+	if !math.IsNaN(got) {
+		t.Errorf("WetBulbTemperatureC(25, -500, 900) = %v, want NaN", got)
+	}
+}

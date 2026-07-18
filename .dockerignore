@@ -5,11 +5,17 @@
 # Documentation
 README.md
 *.md
+docs/
 
 # CI/CD
 .github/
 .gitlab-ci.yml
 .travis.yml
+
+# Local build artifacts / agent tooling
+/tempestwx-utilities
+.superpowers/
+.claude/
 
 # IDE
 .vscode/

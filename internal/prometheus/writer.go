@@ -3,7 +3,9 @@ package prometheus
 import (
 	"context"
 	"log"
+	"net/http"
 	"sync"
+	"time"
 
 	"tempestwx-utilities/internal/tempestudp"
 
@@ -12,12 +14,26 @@ import (
 	"github.com/prometheus/common/expfmt"
 )
 
+// pushTimeout bounds every pusher.Add() call (periodic pushes and the
+// final-flush push in pushWorker) so a dead/slow push gateway can never
+// stall shutdown. Add() uses context.Background() internally, so without
+// this the pusher's HTTP client would otherwise have no deadline at all.
+const pushTimeout = 10 * time.Second
+
 // PrometheusWriter wraps the existing Prometheus push logic.
 type PrometheusWriter struct {
 	pusher *push.Pusher
 	outbox chan prometheus.Metric
 	more   chan bool
 	wg     sync.WaitGroup
+
+	// done is the sole shutdown signal: closing it tells every producer
+	// send in WriteMetrics/Flush and pushWorker that Close is in
+	// progress. outbox and more are never closed (see Close), which is
+	// what keeps a concurrent producer send from ever panicking on a
+	// send-on-closed-channel (D-H1).
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // NewPrometheusWriter creates a new Prometheus writer.
@@ -31,12 +47,14 @@ func NewPrometheusWriter(pushURL, jobName string) *PrometheusWriter {
 	// Create pusher
 	pusher := push.New(pushURL, jobName).
 		Collector(collector).
-		Format(expfmt.FmtText)
+		Format(expfmt.NewFormat(expfmt.TypeTextPlain)).
+		Client(&http.Client{Timeout: pushTimeout})
 
 	w := &PrometheusWriter{
 		pusher: pusher,
 		outbox: outbox,
 		more:   more,
+		done:   make(chan struct{}),
 	}
 
 	// Start background push worker
@@ -59,6 +77,8 @@ func (w *PrometheusWriter) WriteMetrics(ctx context.Context, metrics []prometheu
 	for _, m := range metrics {
 		select {
 		case w.outbox <- m:
+		case <-w.done:
+			return nil
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
@@ -69,6 +89,7 @@ func (w *PrometheusWriter) WriteMetrics(ctx context.Context, metrics []prometheu
 	// Signal push worker
 	select {
 	case w.more <- true:
+	case <-w.done:
 	default:
 		// Already signaled
 	}
@@ -81,25 +102,36 @@ func (w *PrometheusWriter) Flush(ctx context.Context) error {
 	// Trigger immediate push
 	select {
 	case w.more <- true:
+	case <-w.done:
 	default:
 	}
 	return nil
 }
 
-// Close stops the push worker.
-func (w *PrometheusWriter) Close() error {
-	close(w.outbox)
-	close(w.more)
-	w.wg.Wait() // Wait for pushWorker to finish
+// Close signals the push worker to stop via the done gate and waits for it
+// to finish. It is idempotent (safe to call more than once) and never closes
+// outbox or more, so a concurrent WriteMetrics/Flush send can never panic on
+// a send-on-closed-channel (D-H1).
+func (w *PrometheusWriter) Close(ctx context.Context) error {
+	w.closeOnce.Do(func() {
+		close(w.done)
+		w.wg.Wait() // Wait for pushWorker to finish
+	})
 	log.Printf("prometheus: closed")
 	return nil
 }
 
 func (w *PrometheusWriter) pushWorker() {
 	defer w.wg.Done()
-	for range w.more {
-		if err := w.pusher.Add(); err != nil {
-			log.Printf("prometheus: push error: %v", err)
+	for {
+		select {
+		case <-w.more:
+			if err := w.pusher.Add(); err != nil {
+				log.Printf("prometheus: push error: %v", err)
+			}
+		case <-w.done:
+			_ = w.pusher.Add() // final flush of whatever the collector can drain
+			return
 		}
 	}
 }

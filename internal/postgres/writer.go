@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +33,7 @@ type observationRow struct {
 	windSampleInterval   *float64
 	pressure             float64
 	tempAir              float64
-	tempWetbulb          float64
+	tempWetbulb          *float64 // nil (SQL NULL) when WetBulbTemperatureC is non-convergent (NaN)
 	humidity             float64
 	illuminance          float64
 	uvIndex              float64
@@ -71,6 +73,26 @@ type eventRow struct {
 	energy       *float64
 }
 
+// obsInserter abstracts the observation batch-insert path so the
+// Close(ctx)-time drain (TestPostgresWriter_DrainOnClose) can be exercised
+// with a fake in place of a live database connection. Scoped to observations
+// only: it is the row type the drain test needs to assert on, and no second
+// present consumer exists yet for the other three tables.
+type obsInserter interface {
+	insertObservations(ctx context.Context, batch []observationRow) error
+}
+
+// windInserter abstracts the rapid-wind batch-insert path, mirroring
+// obsInserter exactly. Needed so
+// TestPostgresWriter_ShutdownFlushesLocalBatchUnderCanceledWctx can assert on
+// batchRapidWind's local-accumulator shutdown flush without a live database
+// connection: unlike observations/events, rapidWind (and hubStatus) hold rows
+// in a local slice across select iterations, which is the exact codepath the
+// C-H1 shutdown-drain bug lives in.
+type windInserter interface {
+	insertRapidWind(ctx context.Context, batch []rapidWindRow) error
+}
+
 // PostgresWriter writes metrics to PostgreSQL with batching and retry logic.
 type PostgresWriter struct {
 	pool *pgxpool.Pool
@@ -86,8 +108,36 @@ type PostgresWriter struct {
 	flushInterval time.Duration
 	maxRetries    int
 
+	// obsInserter defaults to the writer itself (see NewPostgresWriter);
+	// tests may substitute a fake.
+	obsInserter obsInserter
+
+	// windInserter defaults to the writer itself (see NewPostgresWriter);
+	// tests may substitute a fake.
+	windInserter windInserter
+
 	ctx context.Context
 	wg  sync.WaitGroup
+
+	// done is the sole shutdown signal: closing it tells every producer
+	// send and every batch worker that Close is in progress. The batch
+	// channels themselves are never closed (see Close), which is what
+	// keeps a concurrent producer send from ever panicking on a
+	// send-on-closed-channel (D-H1).
+	done      chan struct{}
+	closeOnce sync.Once
+
+	// shutdownCtx is the live ctx a batch worker must use to flush its local
+	// in-flight batch on shutdown — never w.ctx, which SIGTERM cancels
+	// before Close ever runs in production (that was the C-H1 residual bug:
+	// flushing with an already-canceled ctx made the flush fail as
+	// non-retryable, silently dropping the batch). Close sets shutdownCtx
+	// *before* close(w.done); a worker only ever reads shutdownCtx after its
+	// own `<-w.done` case fires, and the Go memory model guarantees a send
+	// happens-before the corresponding receive on a closed channel — so this
+	// plain field write is safely visible to every worker goroutine without
+	// a mutex or atomic.
+	shutdownCtx context.Context
 }
 
 // NewPostgresWriter creates a new PostgreSQL writer with connection pooling.
@@ -123,6 +173,8 @@ func NewPostgresWriter(ctx context.Context, databaseURL string) (*PostgresWriter
 
 	log.Printf("postgres: connected, schema ready")
 
+	tn := postgresTunables(os.Getenv)
+
 	// Initialize writer
 	w := &PostgresWriter{
 		pool:          pool,
@@ -130,11 +182,14 @@ func NewPostgresWriter(ctx context.Context, databaseURL string) (*PostgresWriter
 		windBatch:     make(chan rapidWindRow, 1000),
 		hubBatch:      make(chan hubStatusRow, 1000),
 		eventBatch:    make(chan eventRow, 1000),
-		batchSize:     100,
-		flushInterval: 10 * time.Second,
-		maxRetries:    3,
+		batchSize:     tn.batchSize,
+		flushInterval: tn.flushInterval,
+		maxRetries:    tn.maxRetries,
 		ctx:           ctx,
+		done:          make(chan struct{}),
 	}
+	w.obsInserter = w
+	w.windInserter = w
 
 	// Start background batch workers
 	w.wg.Add(4)
@@ -152,31 +207,37 @@ func (w *PostgresWriter) batchObservations() {
 
 	for {
 		select {
-		case row, ok := <-w.obsBatch:
-			if !ok {
-				return // Channel closed
-			}
+		case row := <-w.obsBatch:
 			// Immediate flush for observations
-			w.flushObservations([]observationRow{row})
+			w.flushObservations(w.ctx, []observationRow{row})
 
-		case <-w.ctx.Done():
+		case <-w.done:
 			return
 		}
 	}
 }
 
-func (w *PostgresWriter) flushObservations(batch []observationRow) {
+// closeBatchResults closes a pgx batch result set, logging any error.
+// A close error here is not actionable by the caller (per-statement errors
+// are already surfaced by br.Exec()), so it is logged rather than returned.
+func closeBatchResults(br pgx.BatchResults) {
+	if err := br.Close(); err != nil {
+		log.Printf("postgres: batch close error: %v", err)
+	}
+}
+
+func (w *PostgresWriter) flushObservations(ctx context.Context, batch []observationRow) {
 	w.flushWithRetry(func() error {
-		return w.insertObservations(batch)
+		return w.obsInserter.insertObservations(ctx, batch)
 	}, "tempest_observations", len(batch))
 }
 
-func (w *PostgresWriter) insertObservations(batch []observationRow) error {
+func (w *PostgresWriter) insertObservations(ctx context.Context, batch []observationRow) error {
 	if len(batch) == 0 {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	b := &pgx.Batch{}
@@ -201,7 +262,7 @@ func (w *PostgresWriter) insertObservations(batch []observationRow) error {
 	}
 
 	br := w.pool.SendBatch(ctx, b)
-	defer br.Close()
+	defer closeBatchResults(br)
 
 	for i := 0; i < len(batch); i++ {
 		_, err := br.Exec()
@@ -222,52 +283,48 @@ func (w *PostgresWriter) batchRapidWind() {
 
 	for {
 		select {
-		case row, ok := <-w.windBatch:
-			if !ok {
-				// Channel closed - flush remaining
-				if len(batch) > 0 {
-					w.flushRapidWind(batch)
-				}
-				return
-			}
-
+		case row := <-w.windBatch:
 			batch = append(batch, row)
 
 			// Flush when batch is full
 			if len(batch) >= w.batchSize {
-				w.flushRapidWind(batch)
+				w.flushRapidWind(w.ctx, batch)
 				batch = batch[:0]
 			}
 
 		case <-ticker.C:
 			// Periodic flush
 			if len(batch) > 0 {
-				w.flushRapidWind(batch)
+				w.flushRapidWind(w.ctx, batch)
 				batch = batch[:0]
 			}
 
-		case <-w.ctx.Done():
-			// Shutdown - flush remaining
+		case <-w.done:
+			// Shutdown - flush the local in-flight batch using the live
+			// shutdownCtx (not w.ctx, which SIGTERM may have already
+			// canceled — see the shutdownCtx field comment and C-H1).
+			// Whatever is still sitting in the channel is drained by Close
+			// after wg.Wait().
 			if len(batch) > 0 {
-				w.flushRapidWind(batch)
+				w.flushRapidWind(w.shutdownCtx, batch)
 			}
 			return
 		}
 	}
 }
 
-func (w *PostgresWriter) flushRapidWind(batch []rapidWindRow) {
+func (w *PostgresWriter) flushRapidWind(ctx context.Context, batch []rapidWindRow) {
 	w.flushWithRetry(func() error {
-		return w.insertRapidWind(batch)
+		return w.windInserter.insertRapidWind(ctx, batch)
 	}, "tempest_rapid_wind", len(batch))
 }
 
-func (w *PostgresWriter) insertRapidWind(batch []rapidWindRow) error {
+func (w *PostgresWriter) insertRapidWind(ctx context.Context, batch []rapidWindRow) error {
 	if len(batch) == 0 {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	b := &pgx.Batch{}
@@ -282,7 +339,7 @@ func (w *PostgresWriter) insertRapidWind(batch []rapidWindRow) error {
 	}
 
 	br := w.pool.SendBatch(ctx, b)
-	defer br.Close()
+	defer closeBatchResults(br)
 
 	for i := 0; i < len(batch); i++ {
 		_, err := br.Exec()
@@ -303,47 +360,43 @@ func (w *PostgresWriter) batchHubStatus() {
 
 	for {
 		select {
-		case row, ok := <-w.hubBatch:
-			if !ok {
-				if len(batch) > 0 {
-					w.flushHubStatus(batch)
-				}
-				return
-			}
-
+		case row := <-w.hubBatch:
 			batch = append(batch, row)
 			if len(batch) >= w.batchSize {
-				w.flushHubStatus(batch)
+				w.flushHubStatus(w.ctx, batch)
 				batch = batch[:0]
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
-				w.flushHubStatus(batch)
+				w.flushHubStatus(w.ctx, batch)
 				batch = batch[:0]
 			}
 
-		case <-w.ctx.Done():
+		case <-w.done:
+			// Shutdown - flush the local in-flight batch using the live
+			// shutdownCtx (not w.ctx, which SIGTERM may have already
+			// canceled — see the shutdownCtx field comment and C-H1).
 			if len(batch) > 0 {
-				w.flushHubStatus(batch)
+				w.flushHubStatus(w.shutdownCtx, batch)
 			}
 			return
 		}
 	}
 }
 
-func (w *PostgresWriter) flushHubStatus(batch []hubStatusRow) {
+func (w *PostgresWriter) flushHubStatus(ctx context.Context, batch []hubStatusRow) {
 	w.flushWithRetry(func() error {
-		return w.insertHubStatus(batch)
+		return w.insertHubStatus(ctx, batch)
 	}, "tempest_hub_status", len(batch))
 }
 
-func (w *PostgresWriter) insertHubStatus(batch []hubStatusRow) error {
+func (w *PostgresWriter) insertHubStatus(ctx context.Context, batch []hubStatusRow) error {
 	if len(batch) == 0 {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	b := &pgx.Batch{}
@@ -358,7 +411,7 @@ func (w *PostgresWriter) insertHubStatus(batch []hubStatusRow) error {
 	}
 
 	br := w.pool.SendBatch(ctx, b)
-	defer br.Close()
+	defer closeBatchResults(br)
 
 	for i := 0; i < len(batch); i++ {
 		_, err := br.Exec()
@@ -375,31 +428,28 @@ func (w *PostgresWriter) batchEvents() {
 
 	for {
 		select {
-		case row, ok := <-w.eventBatch:
-			if !ok {
-				return
-			}
+		case row := <-w.eventBatch:
 			// Immediate flush for events (critical)
-			w.flushEvents([]eventRow{row})
+			w.flushEvents(w.ctx, []eventRow{row})
 
-		case <-w.ctx.Done():
+		case <-w.done:
 			return
 		}
 	}
 }
 
-func (w *PostgresWriter) flushEvents(batch []eventRow) {
+func (w *PostgresWriter) flushEvents(ctx context.Context, batch []eventRow) {
 	w.flushWithRetry(func() error {
-		return w.insertEvents(batch)
+		return w.insertEvents(ctx, batch)
 	}, "tempest_events", len(batch))
 }
 
-func (w *PostgresWriter) insertEvents(batch []eventRow) error {
+func (w *PostgresWriter) insertEvents(ctx context.Context, batch []eventRow) error {
 	if len(batch) == 0 {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	b := &pgx.Batch{}
@@ -414,7 +464,7 @@ func (w *PostgresWriter) insertEvents(batch []eventRow) error {
 	}
 
 	br := w.pool.SendBatch(ctx, b)
-	defer br.Close()
+	defer closeBatchResults(br)
 
 	for i := 0; i < len(batch); i++ {
 		_, err := br.Exec()
@@ -471,12 +521,19 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 			windDirection: ob[4],
 			pressure:      ob[6], // Raw mb value (no conversion)
 			tempAir:       ob[7],
-			tempWetbulb:   wetBulb,
 			humidity:      ob[8],
 			illuminance:   ob[9],
 			uvIndex:       ob[10],
 			irradiance:    ob[11],
 			rainRate:      ob[12],
+		}
+
+		// WetBulbTemperatureC returns NaN for non-convergent inputs (e.g.
+		// physically impossible humidity/pressure from a malformed report);
+		// store SQL NULL rather than IEEE NaN (mirrors the same guard in
+		// tempestudp/report.go's Prometheus metrics path).
+		if !math.IsNaN(wetBulb) {
+			row.tempWetbulb = &wetBulb
 		}
 
 		// Field 5: wind_sample_interval (seconds)
@@ -511,13 +568,12 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 			row.reportInterval = &interval
 		}
 
-		// Send to batch channel (non-blocking)
 		select {
 		case w.obsBatch <- row:
+		case <-w.done: // Close in progress — stop producing, no send-on-closed
+			return nil
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-			log.Printf("postgres: observation batch channel full, dropping")
 		}
 	}
 
@@ -539,13 +595,12 @@ func (w *PostgresWriter) handleRapidWindReport(ctx context.Context, r *tempestud
 		windDirection: r.Ob[2],
 	}
 
-	// Send to batch channel (non-blocking)
 	select {
 	case w.windBatch <- row:
+	case <-w.done: // Close in progress — stop producing, no send-on-closed
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
-	default:
-		log.Printf("postgres: rapid_wind batch channel full, dropping")
 	}
 
 	return nil
@@ -568,13 +623,12 @@ func (w *PostgresWriter) handleHubStatusReport(ctx context.Context, r *tempestud
 		busErrors:    r.RadioStats[2],
 	}
 
-	// Send to batch channel (non-blocking)
 	select {
 	case w.hubBatch <- row:
+	case <-w.done: // Close in progress — stop producing, no send-on-closed
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
-	default:
-		log.Printf("postgres: hub_status batch channel full, dropping")
 	}
 
 	return nil
@@ -596,13 +650,12 @@ func (w *PostgresWriter) handleRainStartReport(ctx context.Context, r *tempestud
 		energy:       nil, // Not applicable for rain
 	}
 
-	// Send to batch channel (non-blocking)
 	select {
 	case w.eventBatch <- row:
+	case <-w.done: // Close in progress — stop producing, no send-on-closed
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
-	default:
-		log.Printf("postgres: event batch channel full, dropping")
 	}
 
 	return nil
@@ -626,13 +679,12 @@ func (w *PostgresWriter) handleLightningStrikeReport(ctx context.Context, r *tem
 		energy:       &energy,
 	}
 
-	// Send to batch channel (non-blocking)
 	select {
 	case w.eventBatch <- row:
+	case <-w.done: // Close in progress — stop producing, no send-on-closed
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
-	default:
-		log.Printf("postgres: event batch channel full, dropping")
 	}
 
 	return nil
@@ -721,7 +773,7 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 					case "air":
 						obs.tempAir = value
 					case "wetbulb":
-						obs.tempWetbulb = value
+						obs.tempWetbulb = &value
 					}
 					break
 				}
@@ -751,10 +803,10 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 	for _, obs := range observations {
 		select {
 		case w.obsBatch <- *obs:
+		case <-w.done: // Close in progress — stop producing, no send-on-closed
+			return nil
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-			log.Printf("postgres: observation batch channel full during WriteMetrics, dropping")
 		}
 	}
 
@@ -763,8 +815,8 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 
 // Flush implements MetricsWriter interface
 func (w *PostgresWriter) Flush(ctx context.Context) error {
-	// Flush is handled by the batch workers
-	// When Close() is called, channels are closed and workers flush remaining data
+	// Flush is handled by the batch workers.
+	// When Close() is called, done is closed and workers flush remaining data.
 	return nil
 }
 
@@ -851,20 +903,77 @@ func isRetryable(err error) bool {
 	return true
 }
 
-// Close implements MetricsWriter interface
-func (w *PostgresWriter) Close() error {
-	// Close channels to stop workers
-	close(w.obsBatch)
-	close(w.windBatch)
-	close(w.hubBatch)
-	close(w.eventBatch)
+// Close implements MetricsWriter interface. Idempotent — safe to call more
+// than once (C-H3) — and never closes a batch channel, so a concurrent
+// producer send can never panic on a send-on-closed-channel (D-H1). done is
+// the sole shutdown signal (see the PostgresWriter.done field comment).
+func (w *PostgresWriter) Close(ctx context.Context) error {
+	w.closeOnce.Do(func() {
+		// Set shutdownCtx before closing done: this write happens-before
+		// close(w.done), which happens-before any worker's `<-w.done` case
+		// firing (Go memory model), so every worker is guaranteed to see
+		// this live ctx once it starts its shutdown flush — see the
+		// shutdownCtx field comment.
+		w.shutdownCtx = ctx
 
-	// Wait for workers to finish
-	w.wg.Wait()
+		// Signal producers and workers that Close is in progress. There is
+		// no longer a competing <-w.ctx.Done() case in the batch workers
+		// (removed as the C-H1 fix): w.ctx canceling on SIGTERM no longer
+		// races a worker into flushing its local batch with a dead ctx.
+		// <-w.done is the workers' sole shutdown signal, and it always
+		// carries a live ctx via shutdownCtx.
+		close(w.done)
 
-	// Close connection pool
-	w.pool.Close()
-	log.Printf("postgres: closed")
+		// Wait for workers to finish; any worker that exited early left its
+		// remaining buffered rows unread.
+		w.wg.Wait()
+
+		// Drain and flush whatever is still buffered, using the passed-in
+		// ctx (not the writer's own, already-canceled ctx) so the insert
+		// has a live deadline to work with (C-H1). The batch channels are
+		// never closed, so this drain must be non-blocking (see
+		// drainChannel) rather than a `range` over the channel.
+		if batch := drainChannel(w.obsBatch); len(batch) > 0 {
+			w.flushObservations(ctx, batch)
+		}
+		if batch := drainChannel(w.windBatch); len(batch) > 0 {
+			w.flushRapidWind(ctx, batch)
+		}
+		if batch := drainChannel(w.hubBatch); len(batch) > 0 {
+			w.flushHubStatus(ctx, batch)
+		}
+		if batch := drainChannel(w.eventBatch); len(batch) > 0 {
+			w.flushEvents(ctx, batch)
+		}
+
+		// Close connection pool. Guarded against nil so tests can exercise
+		// Close on a writer constructed without a live pool (see
+		// writer_test.go).
+		if w.pool != nil {
+			w.pool.Close()
+		}
+		log.Printf("postgres: closed")
+	})
 
 	return nil
+}
+
+// drainChannel receives every value currently buffered in ch without
+// blocking. The batch channels are never closed (Close signals shutdown via
+// done, not by closing them — see D-H1), so a `range` over ch would block
+// forever once it's empty; the non-blocking select below stops as soon as
+// nothing more is immediately available. Callers must guarantee no other
+// goroutine is still receiving from ch (in Close, w.wg.Wait() has already
+// ensured every batch worker has returned) so that a single non-blocking
+// pass is sufficient to catch everything buffered.
+func drainChannel[T any](ch <-chan T) []T {
+	var batch []T
+	for {
+		select {
+		case v := <-ch:
+			batch = append(batch, v)
+		default:
+			return batch
+		}
+	}
 }

@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
+	"syscall"
 	"time"
 
 	"tempestwx-utilities/internal/config"
@@ -25,22 +26,64 @@ import (
 
 // Old collector implementation removed - now using MetricsSink
 
+// notifyFunc matches signal.NotifyContext's signature so tests can inject a
+// fake and assert on the exact signal set without sending real signals.
+type notifyFunc func(parent context.Context, sig ...os.Signal) (context.Context, context.CancelFunc)
+
+// signalContext derives a context that is canceled on SIGINT or SIGTERM,
+// giving deferred cleanup (e.g. sink.Close, PostgresWriter.Close) a chance to
+// run on graceful shutdown (resolves A-H1: SIGTERM was not handled).
+func signalContext(parent context.Context, notify notifyFunc) (context.Context, context.CancelFunc) {
+	return notify(parent, os.Interrupt, syscall.SIGTERM)
+}
+
+// Mode identifies which operational mode main is running in, since the
+// "at least one writer" invariant differs between them (see requireWriters).
+type Mode int
+
+const (
+	ModeUDP       Mode = iota // UDP listener (no TOKEN)
+	ModeAPIExport             // historical export (TOKEN set)
+)
+
+// requireWriters enforces the "at least one writer" invariant, but only where
+// it applies: UDP mode always needs a writer; API-export mode is satisfied by a
+// DB writer OR KEEP_EXPORT_FILES (fixes A-H2 — gzip-only export was unreachable).
+func requireWriters(mode Mode, writerCount int, keepFiles bool) error {
+	if writerCount > 0 {
+		return nil
+	}
+	if mode == ModeAPIExport && keepFiles {
+		return nil
+	}
+	return fmt.Errorf("no writers configured: set ENABLE_POSTGRES / ENABLE_OTEL / ENABLE_PROMETHEUS_* (or KEEP_EXPORT_FILES in API-export mode)")
+}
+
 func main() {
-	ctx, done := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, done := signalContext(context.Background(), signal.NotifyContext)
 	defer done()
 
 	// Initialize sink for both modes
-	metricsSink := sink.NewMetricsSink(ctx)
-	defer metricsSink.Close()
+	metricsSink := sink.NewMetricsSink()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := metricsSink.Close(cleanupCtx); err != nil {
+			slog.Error("sink close", "err", err)
+		}
+	}()
 
 	// Configure Prometheus writer (UDP mode only)
 	token := os.Getenv("TOKEN")
 	if token == "" {
-		enablePushgateway, _ := strconv.ParseBool(os.Getenv("ENABLE_PROMETHEUS_PUSHGATEWAY"))
+		enablePushgateway, err := config.ParseBoolEnv("ENABLE_PROMETHEUS_PUSHGATEWAY")
+		if err != nil {
+			log.Fatal(err) //nolint:gocritic // log.Fatal on a startup config error exits before any writer buffers data, so the skipped deferred sink Close is harmless
+		}
 		if enablePushgateway {
 			pushURL := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
 			if pushURL == "" {
-				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true")
+				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true") //nolint:gocritic // log.Fatal on a startup config error exits before any writer buffers data, so the skipped deferred sink Close is harmless
 			}
 			jobName := os.Getenv("JOB_NAME")
 			if jobName == "" {
@@ -51,7 +94,10 @@ func main() {
 		}
 
 		// Configure Prometheus metrics server (scrape endpoint)
-		enableMetrics, _ := strconv.ParseBool(os.Getenv("ENABLE_PROMETHEUS_METRICS"))
+		enableMetrics, err := config.ParseBoolEnv("ENABLE_PROMETHEUS_METRICS")
+		if err != nil {
+			log.Fatal(err)
+		}
 		if enableMetrics {
 			port := os.Getenv("PROMETHEUS_METRICS_PORT")
 			if port == "" {
@@ -66,7 +112,10 @@ func main() {
 	}
 
 	// Configure Postgres writer (both modes)
-	enablePostgres, _ := strconv.ParseBool(os.Getenv("ENABLE_POSTGRES"))
+	enablePostgres, err := config.ParseBoolEnv("ENABLE_POSTGRES")
+	if err != nil {
+		log.Fatal(err)
+	}
 	if enablePostgres {
 		dbConfig, err := config.GetDatabaseConfig()
 		if err != nil {
@@ -82,9 +131,17 @@ func main() {
 		metricsSink.AddWriter(pgWriter)
 	}
 
-	// Require at least one writer
-	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or ENABLE_POSTGRES")
+	// Require at least one writer (relaxed for gzip-only API-export mode; see requireWriters)
+	mode := ModeUDP
+	if token != "" {
+		mode = ModeAPIExport
+	}
+	keepFiles, err := config.ParseBoolEnv("KEEP_EXPORT_FILES")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := requireWriters(mode, metricsSink.WriterCount(), keepFiles); err != nil {
+		log.Fatal(err)
 	}
 
 	// Choose operational mode
@@ -96,7 +153,10 @@ func main() {
 }
 
 func listenAndPushWithSink(ctx context.Context, metricsSink *sink.MetricsSink) {
-	logUDP, _ := strconv.ParseBool(os.Getenv("LOG_UDP"))
+	logUDP, err := config.ParseBoolEnv("LOG_UDP")
+	if err != nil {
+		log.Fatal(err)
+	}
 	log.Printf("starting UDP listener mode")
 
 	if err := listen(ctx, func(b []byte, addr *net.UDPAddr) error {
@@ -131,7 +191,7 @@ func listen(ctx context.Context, rx func([]byte, *net.UDPAddr) error) error {
 	if err != nil {
 		return err
 	}
-	defer sock.Close()
+	defer sock.Close() //nolint:errcheck // UDP listener teardown revisited under graceful shutdown in Task 0.8
 	log.Printf("listening on UDP :50222")
 
 	readErr := make(chan error, 1)
@@ -184,7 +244,10 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 		}
 	}
 
-	keepFiles, _ := strconv.ParseBool(os.Getenv("KEEP_EXPORT_FILES"))
+	keepFiles, err := config.ParseBoolEnv("KEEP_EXPORT_FILES")
+	if err != nil {
+		log.Fatal(err)
+	}
 	fileNum := 1
 
 	var next time.Time
@@ -199,7 +262,7 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 				log.Printf("fetching %s starting %s", station.Name, cur.Format(time.RFC3339))
 				stationMetrics, err := client.GetObservations(ctx, station, cur, next)
 				if err != nil {
-					log.Fatalf("error fetching %#v for %d-%d: %v", station, cur.Unix(), next.Unix(), err)
+					log.Fatalf("error fetching %#v for %d-%d: %v", station, cur.Unix(), next.Unix(), err) //nolint:gosec // pre-existing: station/error data logged unsanitized; deferred as follow-up hardening, not owned by a current task
 				}
 				metrics = append(metrics, stationMetrics...)
 			}
@@ -210,7 +273,7 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 		}
 
 		// Send to sink (Postgres)
-		log.Printf("sending %d metrics to sink", len(metrics))
+		log.Printf("sending %d metrics to sink", len(metrics)) //nolint:gosec // pre-existing: logs a count derived from tainted input, not raw content; deferred as follow-up hardening, not owned by a current task
 		if err := metricsSink.SendMetrics(ctx, metrics); err != nil {
 			log.Printf("error sending metrics: %v", err)
 		}
@@ -240,14 +303,14 @@ func writeMetricsToFile(filename string, metrics []promclient.Metric) error {
 	}
 
 	log.Printf("writing %s", filename)
-	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) //nolint:gosec // G302/G304: 0o644 perms and export filename are intentional, not user-controlled in a way that risks traversal
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // Close handling for export writers revisited in Task 0.11
 
 	gzw := gzip.NewWriter(f)
-	defer gzw.Close()
+	defer gzw.Close() //nolint:errcheck // Close handling for export writers revisited in Task 0.11
 
 	enc := expfmt.NewEncoder(gzw, expfmt.NewFormat(expfmt.TypeTextPlain))
 	for _, family := range families {

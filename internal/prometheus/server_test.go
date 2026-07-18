@@ -3,7 +3,9 @@ package prometheus
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,8 +26,39 @@ func TestMetricsServer_StartAndClose(t *testing.T) {
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)
 
-	if err := server.Close(); err != nil {
+	if err := server.Close(t.Context()); err != nil {
 		t.Fatalf("failed to close server: %v", err)
+	}
+}
+
+func TestMetricsServer_StartReturnsBindError(t *testing.T) {
+	// Discover a free port by binding to :0 with a plain listener, then
+	// release it immediately. Closing a listener that never accepted a
+	// connection releases the port with no lingering state, so it's safe
+	// to reuse straight away.
+	probe, err := net.Listen("tcp", ":0") //nolint:gosec // test-only: binds an ephemeral port on localhost to discover a free port number, not a production listener
+	if err != nil {
+		t.Fatalf("failed to discover a free port: %v", err)
+	}
+	port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+	if err := probe.Close(); err != nil {
+		t.Fatalf("failed to release probe listener: %v", err)
+	}
+
+	server1 := NewMetricsServer(port)
+	if err := server1.Start(); err != nil {
+		t.Fatalf("first server failed to bind %s: %v", port, err)
+	}
+	defer func() { _ = server1.Close(t.Context()) }()
+
+	// server1 is still holding the port, so a second server bound to the
+	// same port must fail synchronously.
+	server2 := NewMetricsServer(port)
+	err = server2.Start()
+	defer func() { _ = server2.Close(t.Context()) }()
+
+	if err == nil {
+		t.Fatal("expected second Start() on the same port to return a bind error, got nil")
 	}
 }
 
@@ -63,8 +96,7 @@ func TestMetricsServer_WriteMetrics(t *testing.T) {
 		"ST-00001", "air",
 	)
 
-	err := server.WriteMetrics(ctx, []prometheus.Metric{metric})
-	if err != nil {
+	if err := server.WriteMetrics(ctx, []prometheus.Metric{metric}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -80,7 +112,7 @@ func TestMetricsServer_MetricsEndpoint(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close(t.Context()) }()
 
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)
@@ -92,14 +124,14 @@ func TestMetricsServer_MetricsEndpoint(t *testing.T) {
 		22.5,
 		"ST-00001", "air",
 	)
-	server.WriteMetrics(context.Background(), []prometheus.Metric{metric})
+	_ = server.WriteMetrics(context.Background(), []prometheus.Metric{metric})
 
 	// Fetch metrics endpoint
 	resp, err := http.Get("http://127.0.0.1:19090/metrics")
 	if err != nil {
 		t.Fatalf("failed to fetch metrics: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
@@ -117,7 +149,7 @@ func TestMetricsServer_HealthEndpoint(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close(t.Context()) }()
 
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)
@@ -126,7 +158,7 @@ func TestMetricsServer_HealthEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to fetch health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
