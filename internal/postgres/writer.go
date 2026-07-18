@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -144,6 +145,8 @@ func NewPostgresWriter(ctx context.Context, databaseURL string) (*PostgresWriter
 
 	log.Printf("postgres: connected, schema ready")
 
+	tn := postgresTunables(os.Getenv)
+
 	// Initialize writer
 	w := &PostgresWriter{
 		pool:          pool,
@@ -151,9 +154,9 @@ func NewPostgresWriter(ctx context.Context, databaseURL string) (*PostgresWriter
 		windBatch:     make(chan rapidWindRow, 1000),
 		hubBatch:      make(chan hubStatusRow, 1000),
 		eventBatch:    make(chan eventRow, 1000),
-		batchSize:     100,
-		flushInterval: 10 * time.Second,
-		maxRetries:    3,
+		batchSize:     tn.batchSize,
+		flushInterval: tn.flushInterval,
+		maxRetries:    tn.maxRetries,
 		ctx:           ctx,
 		done:          make(chan struct{}),
 	}
