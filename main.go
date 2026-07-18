@@ -78,12 +78,12 @@ func main() {
 	if token == "" {
 		enablePushgateway, err := config.ParseBoolEnv("ENABLE_PROMETHEUS_PUSHGATEWAY")
 		if err != nil {
-			log.Fatal(err) //nolint:gocritic // log.Fatal skipping the deferred sink Close is addressed by the graceful-shutdown rework in Task 0.8
+			log.Fatal(err) //nolint:gocritic // log.Fatal on a startup config error exits before any writer buffers data, so the skipped deferred sink Close is harmless
 		}
 		if enablePushgateway {
 			pushURL := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
 			if pushURL == "" {
-				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true") //nolint:gocritic // log.Fatal skipping the deferred sink Close is addressed by the graceful-shutdown rework in Task 0.8
+				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true") //nolint:gocritic // log.Fatal on a startup config error exits before any writer buffers data, so the skipped deferred sink Close is harmless
 			}
 			jobName := os.Getenv("JOB_NAME")
 			if jobName == "" {

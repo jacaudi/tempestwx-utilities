@@ -128,7 +128,10 @@ func (s *MetricsSink) SendMetrics(ctx context.Context, metrics []prometheus.Metr
 }
 
 // Close flushes and closes all writers using the caller-supplied context
-// (never a stored one), aggregating per-writer errors via errors.Join.
+// (never a stored one), aggregating per-writer errors via errors.Join. A
+// panic in one writer's Flush/Close is recovered and reported as an error
+// rather than crashing the process during shutdown — mirroring the panic
+// recovery already in SendReport/SendMetrics.
 func (s *MetricsSink) Close(ctx context.Context) error {
 	s.mu.RLock()
 	writers := slices.Clone(s.writers)
@@ -143,6 +146,14 @@ func (s *MetricsSink) Close(ctx context.Context) error {
 		wg.Add(1)
 		go func(writer MetricsWriter) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("writer panic recovered during close", "panic", r, "writer", fmt.Sprintf("%T", writer))
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("writer %T panicked during close: %v", writer, r))
+					mu.Unlock()
+				}
+			}()
 			if err := writer.Flush(ctx); err != nil {
 				mu.Lock()
 				errs = append(errs, err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -32,7 +33,7 @@ type observationRow struct {
 	windSampleInterval   *float64
 	pressure             float64
 	tempAir              float64
-	tempWetbulb          float64
+	tempWetbulb          *float64 // nil (SQL NULL) when WetBulbTemperatureC is non-convergent (NaN)
 	humidity             float64
 	illuminance          float64
 	uvIndex              float64
@@ -81,6 +82,17 @@ type obsInserter interface {
 	insertObservations(ctx context.Context, batch []observationRow) error
 }
 
+// windInserter abstracts the rapid-wind batch-insert path, mirroring
+// obsInserter exactly. Needed so
+// TestPostgresWriter_ShutdownFlushesLocalBatchUnderCanceledWctx can assert on
+// batchRapidWind's local-accumulator shutdown flush without a live database
+// connection: unlike observations/events, rapidWind (and hubStatus) hold rows
+// in a local slice across select iterations, which is the exact codepath the
+// C-H1 shutdown-drain bug lives in.
+type windInserter interface {
+	insertRapidWind(ctx context.Context, batch []rapidWindRow) error
+}
+
 // PostgresWriter writes metrics to PostgreSQL with batching and retry logic.
 type PostgresWriter struct {
 	pool *pgxpool.Pool
@@ -100,6 +112,10 @@ type PostgresWriter struct {
 	// tests may substitute a fake.
 	obsInserter obsInserter
 
+	// windInserter defaults to the writer itself (see NewPostgresWriter);
+	// tests may substitute a fake.
+	windInserter windInserter
+
 	ctx context.Context
 	wg  sync.WaitGroup
 
@@ -110,6 +126,18 @@ type PostgresWriter struct {
 	// send-on-closed-channel (D-H1).
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// shutdownCtx is the live ctx a batch worker must use to flush its local
+	// in-flight batch on shutdown — never w.ctx, which SIGTERM cancels
+	// before Close ever runs in production (that was the C-H1 residual bug:
+	// flushing with an already-canceled ctx made the flush fail as
+	// non-retryable, silently dropping the batch). Close sets shutdownCtx
+	// *before* close(w.done); a worker only ever reads shutdownCtx after its
+	// own `<-w.done` case fires, and the Go memory model guarantees a send
+	// happens-before the corresponding receive on a closed channel — so this
+	// plain field write is safely visible to every worker goroutine without
+	// a mutex or atomic.
+	shutdownCtx context.Context
 }
 
 // NewPostgresWriter creates a new PostgreSQL writer with connection pooling.
@@ -161,6 +189,7 @@ func NewPostgresWriter(ctx context.Context, databaseURL string) (*PostgresWriter
 		done:          make(chan struct{}),
 	}
 	w.obsInserter = w
+	w.windInserter = w
 
 	// Start background batch workers
 	w.wg.Add(4)
@@ -183,9 +212,6 @@ func (w *PostgresWriter) batchObservations() {
 			w.flushObservations(w.ctx, []observationRow{row})
 
 		case <-w.done:
-			return
-
-		case <-w.ctx.Done():
 			return
 		}
 	}
@@ -274,17 +300,13 @@ func (w *PostgresWriter) batchRapidWind() {
 			}
 
 		case <-w.done:
-			// Shutdown - flush the local in-flight batch; whatever is still
-			// sitting in the channel is drained by Close after wg.Wait().
+			// Shutdown - flush the local in-flight batch using the live
+			// shutdownCtx (not w.ctx, which SIGTERM may have already
+			// canceled — see the shutdownCtx field comment and C-H1).
+			// Whatever is still sitting in the channel is drained by Close
+			// after wg.Wait().
 			if len(batch) > 0 {
-				w.flushRapidWind(w.ctx, batch)
-			}
-			return
-
-		case <-w.ctx.Done():
-			// Shutdown - flush remaining
-			if len(batch) > 0 {
-				w.flushRapidWind(w.ctx, batch)
+				w.flushRapidWind(w.shutdownCtx, batch)
 			}
 			return
 		}
@@ -293,7 +315,7 @@ func (w *PostgresWriter) batchRapidWind() {
 
 func (w *PostgresWriter) flushRapidWind(ctx context.Context, batch []rapidWindRow) {
 	w.flushWithRetry(func() error {
-		return w.insertRapidWind(ctx, batch)
+		return w.windInserter.insertRapidWind(ctx, batch)
 	}, "tempest_rapid_wind", len(batch))
 }
 
@@ -352,14 +374,11 @@ func (w *PostgresWriter) batchHubStatus() {
 			}
 
 		case <-w.done:
+			// Shutdown - flush the local in-flight batch using the live
+			// shutdownCtx (not w.ctx, which SIGTERM may have already
+			// canceled — see the shutdownCtx field comment and C-H1).
 			if len(batch) > 0 {
-				w.flushHubStatus(w.ctx, batch)
-			}
-			return
-
-		case <-w.ctx.Done():
-			if len(batch) > 0 {
-				w.flushHubStatus(w.ctx, batch)
+				w.flushHubStatus(w.shutdownCtx, batch)
 			}
 			return
 		}
@@ -414,9 +433,6 @@ func (w *PostgresWriter) batchEvents() {
 			w.flushEvents(w.ctx, []eventRow{row})
 
 		case <-w.done:
-			return
-
-		case <-w.ctx.Done():
 			return
 		}
 	}
@@ -505,12 +521,19 @@ func (w *PostgresWriter) handleObservationReport(ctx context.Context, r *tempest
 			windDirection: ob[4],
 			pressure:      ob[6], // Raw mb value (no conversion)
 			tempAir:       ob[7],
-			tempWetbulb:   wetBulb,
 			humidity:      ob[8],
 			illuminance:   ob[9],
 			uvIndex:       ob[10],
 			irradiance:    ob[11],
 			rainRate:      ob[12],
+		}
+
+		// WetBulbTemperatureC returns NaN for non-convergent inputs (e.g.
+		// physically impossible humidity/pressure from a malformed report);
+		// store SQL NULL rather than IEEE NaN (mirrors the same guard in
+		// tempestudp/report.go's Prometheus metrics path).
+		if !math.IsNaN(wetBulb) {
+			row.tempWetbulb = &wetBulb
 		}
 
 		// Field 5: wind_sample_interval (seconds)
@@ -750,7 +773,7 @@ func (w *PostgresWriter) WriteMetrics(ctx context.Context, metrics []prometheus.
 					case "air":
 						obs.tempAir = value
 					case "wetbulb":
-						obs.tempWetbulb = value
+						obs.tempWetbulb = &value
 					}
 					break
 				}
@@ -886,12 +909,19 @@ func isRetryable(err error) bool {
 // the sole shutdown signal (see the PostgresWriter.done field comment).
 func (w *PostgresWriter) Close(ctx context.Context) error {
 	w.closeOnce.Do(func() {
-		// Signal producers and workers. Each worker's select also still
-		// races <-w.ctx.Done() against the channel receive — if w.ctx is
-		// already canceled (the normal shutdown sequence: SIGTERM cancels
-		// the shared context the writer was built with before
-		// Close(cleanupCtx) runs with its own context), a worker can exit
-		// via ctx.Done() while rows are still buffered.
+		// Set shutdownCtx before closing done: this write happens-before
+		// close(w.done), which happens-before any worker's `<-w.done` case
+		// firing (Go memory model), so every worker is guaranteed to see
+		// this live ctx once it starts its shutdown flush — see the
+		// shutdownCtx field comment.
+		w.shutdownCtx = ctx
+
+		// Signal producers and workers that Close is in progress. There is
+		// no longer a competing <-w.ctx.Done() case in the batch workers
+		// (removed as the C-H1 fix): w.ctx canceling on SIGTERM no longer
+		// races a worker into flushing its local batch with a dead ctx.
+		// <-w.done is the workers' sole shutdown signal, and it always
+		// carries a live ctx via shutdownCtx.
 		close(w.done)
 
 		// Wait for workers to finish; any worker that exited early left its

@@ -101,6 +101,9 @@ func TestPostgresWriter_RouteObservation(t *testing.T) {
 		if row.windAvg != 2.0 {
 			t.Errorf("wrong wind avg: got %f", row.windAvg)
 		}
+		if row.tempWetbulb == nil {
+			t.Error("expected non-nil temp_wetbulb for a convergent observation")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for observation")
 	}
@@ -172,6 +175,142 @@ func TestPostgresWriter_DrainOnClose(t *testing.T) {
 
 	if got := fake.count(); got != wantRows {
 		t.Fatalf("expected %d rows drained via Close, got %d", wantRows, got)
+	}
+}
+
+// TestHandleObservationReport_NaNWetbulbYieldsNull proves a non-convergent
+// (physically impossible) observation stores SQL NULL for temp_wetbulb
+// rather than IEEE NaN. tempest_observations.temp_wetbulb is a nullable
+// DOUBLE PRECISION column; unlike internal/tempestudp/report.go's Prometheus
+// path (which skips emitting the wetbulb metric on NaN), the Postgres path
+// had no such guard before this fix.
+func TestHandleObservationReport_NaNWetbulbYieldsNull(t *testing.T) {
+	w := &PostgresWriter{
+		obsBatch: make(chan observationRow, 10),
+		done:     make(chan struct{}),
+	}
+
+	// temp=25, humidity=-500 (physically impossible), pressure=900 is the
+	// exact non-convergent input proven by
+	// tempestudp.TestWetBulb_NonConvergentReturnsNaN to make
+	// WetBulbTemperatureC return NaN.
+	report := &tempestudp.TempestObservationReport{
+		SerialNumber: "ST-NAN",
+		Obs: [][]float64{
+			{1234567890, 1.5, 2.0, 2.5, 180, 0, 900, 25, -500, 50000, 3, 500, 0.5},
+		},
+	}
+
+	if err := w.handleObservationReport(t.Context(), report); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case row := <-w.obsBatch:
+		if row.tempWetbulb != nil {
+			t.Errorf("expected NULL (nil) temp_wetbulb for a non-convergent observation, got %v", *row.tempWetbulb)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for observation")
+	}
+}
+
+// fakeWindInserter is a test double for the windInserter seam, letting
+// TestPostgresWriter_ShutdownFlushesLocalBatchUnderCanceledWctx assert on the
+// worker's local in-flight batch without a live Postgres connection.
+type fakeWindInserter struct {
+	mu   sync.Mutex
+	rows []rapidWindRow
+}
+
+// insertRapidWind mirrors the real insertRapidWind's ctx-sensitivity: a real
+// pgx insert against an already-canceled ctx fails immediately with
+// context.Canceled (a non-retryable error per isRetryable), which is exactly
+// how the shutdown-drain bug drops rows. A fake that ignored ctx entirely
+// would pass this test regardless of whether the shutdown flush used the
+// live or the canceled context, defeating the point of the test.
+func (f *fakeWindInserter) insertRapidWind(ctx context.Context, batch []rapidWindRow) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rows = append(f.rows, batch...)
+	return nil
+}
+
+func (f *fakeWindInserter) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.rows)
+}
+
+// TestPostgresWriter_ShutdownFlushesLocalBatchUnderCanceledWctx proves the
+// residual C-H1 shutdown-drain bug: batchRapidWind accumulates rows below
+// batchSize in a LOCAL slice (never flushed, never sitting in the channel for
+// drainChannel to find), and on shutdown must flush that local slice using
+// the live cleanup ctx passed to Close — not the writer's own w.ctx, which
+// SIGTERM cancels before Close ever runs in production. Mirrors the real
+// wiring: w.ctx is canceled up front, exactly like main.go's shared signal
+// context is canceled before the deferred sink.Close(cleanupCtx) executes.
+func TestPostgresWriter_ShutdownFlushesLocalBatchUnderCanceledWctx(t *testing.T) {
+	// w.ctx starts LIVE so the rows below land deterministically in
+	// batchRapidWind's local accumulator (no race against a ctx.Done() case
+	// that's already ready). It is only canceled afterward, mirroring the
+	// real SIGTERM sequence: the shared context is canceled first, then
+	// Close(cleanupCtx) runs with its own, separately-live context.
+	workerCtx, cancelWorkerCtx := context.WithCancel(context.Background())
+
+	fake := &fakeWindInserter{}
+	w := &PostgresWriter{
+		obsBatch:      make(chan observationRow, 10),
+		windBatch:     make(chan rapidWindRow, 10),
+		hubBatch:      make(chan hubStatusRow, 10),
+		eventBatch:    make(chan eventRow, 10),
+		batchSize:     100, // rows below this stay in the worker's local slice
+		flushInterval: time.Hour,
+		maxRetries:    3,
+		ctx:           workerCtx,
+		done:          make(chan struct{}),
+		windInserter:  fake,
+	}
+
+	w.wg.Add(4)
+	go w.batchObservations()
+	go w.batchRapidWind()
+	go w.batchHubStatus()
+	go w.batchEvents()
+
+	const wantRows = 5
+	for i := 0; i < wantRows; i++ {
+		w.windBatch <- rapidWindRow{windSpeed: float64(i)}
+	}
+
+	// Wait for batchRapidWind to pull the rows off the channel into its local
+	// accumulator (below batchSize, so it does NOT flush them yet). w.ctx is
+	// still live here, so the worker has no competing shutdown case to race
+	// against — this drains deterministically.
+	deadline := time.After(time.Second)
+	for len(w.windBatch) != 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for batchRapidWind to drain windBatch into its local accumulator")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	// Now simulate SIGTERM: cancel the shared context the writer was
+	// constructed with, before Close runs with its own live cleanup ctx.
+	cancelWorkerCtx()
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := w.Close(closeCtx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := fake.count(); got != wantRows {
+		t.Fatalf("expected %d in-flight rows flushed via the live cleanup ctx, got %d (rows dropped because shutdown flush used the canceled w.ctx)", wantRows, got)
 	}
 }
 

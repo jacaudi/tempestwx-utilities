@@ -14,15 +14,16 @@ import (
 
 // Mock writer for testing
 type mockWriter struct {
-	reportCalls int
-	metricCalls int
-	reportErr   error
-	metricsErr  error
-	panicMsg    string // non-empty triggers a panic from WriteReport
-	flushCalled bool
-	closeCalled bool
-	closeCtx    context.Context
-	mu          sync.Mutex
+	reportCalls   int
+	metricCalls   int
+	reportErr     error
+	metricsErr    error
+	panicMsg      string // non-empty triggers a panic from WriteReport
+	closePanicMsg string // non-empty triggers a panic from Close
+	flushCalled   bool
+	closeCalled   bool
+	closeCtx      context.Context
+	mu            sync.Mutex
 }
 
 func (m *mockWriter) WriteReport(ctx context.Context, report tempestudp.Report) error {
@@ -54,6 +55,9 @@ func (m *mockWriter) Close(ctx context.Context) error {
 	defer m.mu.Unlock()
 	m.closeCalled = true
 	m.closeCtx = ctx
+	if m.closePanicMsg != "" {
+		panic(m.closePanicMsg)
+	}
 	return nil
 }
 
@@ -253,6 +257,34 @@ func TestSink_SendReportAggregatesErrors(t *testing.T) {
 			t.Errorf("expected nil error when all writers succeed, got: %v", err)
 		}
 	})
+}
+
+// TestSink_ClosePanicRecovered verifies a writer whose Close panics cannot
+// crash the sink or block the sibling writer's shutdown, mirroring
+// SendReport's/SendMetrics's existing panic-recovery pattern.
+func TestSink_ClosePanicRecovered(t *testing.T) {
+	ctx := context.Background()
+	s := NewMetricsSink()
+
+	panicker := &mockWriter{closePanicMsg: "boom on close"}
+	healthy := &mockWriter{}
+	s.AddWriter(panicker)
+	s.AddWriter(healthy)
+
+	err := s.Close(ctx)
+	if err == nil {
+		t.Fatal("expected a non-nil error naming the recovered panic")
+	}
+	if !strings.Contains(err.Error(), "boom on close") {
+		t.Errorf("expected error to mention the panic value, got: %v", err)
+	}
+
+	if !panicker.closeCalled {
+		t.Error("panicker.Close should have been called")
+	}
+	if !healthy.closeCalled {
+		t.Error("healthy.Close should still have been called despite the sibling panic")
+	}
 }
 
 // TestSink_ClosePassesContext verifies Close(ctx) forwards the caller's
