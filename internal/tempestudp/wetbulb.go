@@ -25,7 +25,7 @@ func WetBulbTemperatureC(temperatureC float64, humidityPercent float64, stationP
 	// matches the vapor pressure implied by the relative humidity
 	step := 8.0
 	wetBulbC := temperatureC - step*2
-	for i := 0; i < 10000; i++ {
+	for range 10000 {
 		eWetBulb := wetBulbVaporPressure(temperatureC, wetBulbC, stationPressureHpa)
 
 		delta := eHumidity - eWetBulb
@@ -44,5 +44,7 @@ func WetBulbTemperatureC(temperatureC float64, humidityPercent float64, stationP
 		}
 		wetBulbC += step
 	}
-	panic("failed to converge")
+	// Non-convergent input (e.g. physically impossible humidity/pressure)
+	// — report unknown rather than panicking.
+	return math.NaN()
 }
