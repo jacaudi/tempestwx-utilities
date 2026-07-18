@@ -1,7 +1,10 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 )
 
@@ -24,11 +27,6 @@ func GetDatabaseConfig() (string, error) {
 		return "", nil // No database configured
 	}
 
-	port := os.Getenv("POSTGRES_PORT")
-	if port == "" {
-		port = "5432"
-	}
-
 	username := os.Getenv("POSTGRES_USERNAME")
 	if username == "" {
 		return "", fmt.Errorf("POSTGRES_USERNAME required when using POSTGRES_HOST")
@@ -44,11 +42,15 @@ func GetDatabaseConfig() (string, error) {
 		return "", fmt.Errorf("POSTGRES_NAME required when using POSTGRES_HOST")
 	}
 
-	sslmode := os.Getenv("POSTGRES_SSLMODE")
-	if sslmode == "" {
-		sslmode = "disable"
-	}
+	port := cmp.Or(os.Getenv("POSTGRES_PORT"), "5432")
+	sslmode := cmp.Or(os.Getenv("POSTGRES_SSLMODE"), "disable")
 
-	return fmt.Sprintf("postgresql://%s:%s@%s:%s/%s?sslmode=%s",
-		username, password, host, port, dbname, sslmode), nil
+	u := url.URL{
+		Scheme: "postgresql",
+		User:   url.UserPassword(username, password), // percent-encodes @ : / ? # &
+		Host:   net.JoinHostPort(host, port),
+		Path:   "/" + dbname,
+	}
+	u.RawQuery = url.Values{"sslmode": {sslmode}}.Encode()
+	return u.String(), nil
 }

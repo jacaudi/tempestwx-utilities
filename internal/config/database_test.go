@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"testing"
 )
 
@@ -58,6 +59,35 @@ func TestGetDatabaseConfig_ComponentDefaults(t *testing.T) {
 	expected := "postgresql://user:pass@postgres:5432/db?sslmode=disable" //nolint:gosec // test fixture value, not a real credential
 	if url != expected {
 		t.Errorf("got %q, want %q", url, expected)
+	}
+}
+
+func TestGetDatabaseConfig_EscapesCredentials(t *testing.T) {
+	t.Setenv("POSTGRES_URL", "")
+
+	const specialPassword = "p@ss:w/o?r#d&1" //nolint:gosec // test fixture value, not a real credential
+
+	t.Setenv("POSTGRES_HOST", "postgres")
+	t.Setenv("POSTGRES_USERNAME", "tempest")
+	t.Setenv("POSTGRES_PASSWORD", specialPassword)
+	t.Setenv("POSTGRES_NAME", "weather")
+
+	dsn, err := GetDatabaseConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("DSN %q did not round-trip through url.Parse: %v", dsn, err)
+	}
+
+	got, ok := parsed.User.Password()
+	if !ok {
+		t.Fatalf("DSN %q has no password component", dsn)
+	}
+	if got != specialPassword {
+		t.Errorf("password round-trip mismatch: got %q, want %q", got, specialPassword)
 	}
 }
 
