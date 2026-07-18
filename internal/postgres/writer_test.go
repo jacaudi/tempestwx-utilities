@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,5 +102,73 @@ func TestPostgresWriter_RouteObservation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for observation")
+	}
+}
+
+// fakeObsInserter is a test double for the obsInserter seam, letting
+// TestPostgresWriter_DrainOnClose assert on drained rows without a live
+// Postgres connection.
+type fakeObsInserter struct {
+	mu   sync.Mutex
+	rows []observationRow
+}
+
+func (f *fakeObsInserter) insertObservations(_ context.Context, batch []observationRow) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rows = append(f.rows, batch...)
+	return nil
+}
+
+func (f *fakeObsInserter) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.rows)
+}
+
+// TestPostgresWriter_DrainOnClose proves Close(ctx) drains rows still
+// sitting in the buffered channel (not just each worker's local in-flight
+// batch) using the passed-in cleanup ctx rather than the writer's own
+// (already-canceled) ctx (C-H1).
+func TestPostgresWriter_DrainOnClose(t *testing.T) {
+	// The writer's own ctx is canceled up front, simulating the real
+	// shutdown sequence where SIGTERM cancels the shared context the
+	// writer was constructed with before Close(cleanupCtx) is called with a
+	// separate, still-live context.
+	workerCtx, cancelWorkerCtx := context.WithCancel(context.Background())
+	cancelWorkerCtx()
+
+	fake := &fakeObsInserter{}
+	w := &PostgresWriter{
+		obsBatch:      make(chan observationRow, 1000),
+		windBatch:     make(chan rapidWindRow, 1000),
+		hubBatch:      make(chan hubStatusRow, 1000),
+		eventBatch:    make(chan eventRow, 1000),
+		batchSize:     100,
+		flushInterval: time.Second,
+		maxRetries:    3,
+		ctx:           workerCtx,
+		obsInserter:   fake,
+	}
+
+	w.wg.Add(4)
+	go w.batchObservations()
+	go w.batchRapidWind()
+	go w.batchHubStatus()
+	go w.batchEvents()
+
+	const wantRows = 250
+	for i := 0; i < wantRows; i++ {
+		w.obsBatch <- observationRow{serialNumber: "ST-DRAIN"}
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := w.Close(closeCtx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := fake.count(); got != wantRows {
+		t.Fatalf("expected %d rows drained via Close, got %d", wantRows, got)
 	}
 }

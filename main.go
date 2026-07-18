@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"tempestwx-utilities/internal/config"
@@ -25,8 +26,19 @@ import (
 
 // Old collector implementation removed - now using MetricsSink
 
+// notifyFunc matches signal.NotifyContext's signature so tests can inject a
+// fake and assert on the exact signal set without sending real signals.
+type notifyFunc func(parent context.Context, sig ...os.Signal) (context.Context, context.CancelFunc)
+
+// signalContext derives a context that is canceled on SIGINT or SIGTERM,
+// giving deferred cleanup (e.g. sink.Close, PostgresWriter.Close) a chance to
+// run on graceful shutdown (resolves A-H1: SIGTERM was not handled).
+func signalContext(parent context.Context, notify notifyFunc) (context.Context, context.CancelFunc) {
+	return notify(parent, os.Interrupt, syscall.SIGTERM)
+}
+
 func main() {
-	ctx, done := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, done := signalContext(context.Background(), signal.NotifyContext)
 	defer done()
 
 	// Initialize sink for both modes
