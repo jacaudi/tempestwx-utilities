@@ -142,6 +142,56 @@ func Test_hubStatusReport_Metrics(t *testing.T) {
 	})
 }
 
+func TestHubStatusReport_ShortRadioStats(t *testing.T) {
+	metricsTest(t, []metricsTestcase{
+		{
+			"empty",
+			`{"serial_number":"HB-00031344","type":"hub_status","firmware_revision":"171","uptime":64275,"rssi":-44,"timestamp":1688666650,"reset_flags":"BOR,PIN,POR","seq":6419,"fs":[1,0,15675411,524288],"radio_stats":[],"mqtt_stats":[1,4]}`,
+			"HB-00031344", 1688666650,
+			[]simpleMetric{
+				{
+					desc:  tempest.Uptime,
+					value: 64275,
+				},
+				{
+					desc:  tempest.Rssi,
+					value: -44,
+				},
+			},
+		},
+		{
+			"null",
+			`{"serial_number":"HB-00031344","type":"hub_status","firmware_revision":"171","uptime":64275,"rssi":-44,"timestamp":1688666650,"reset_flags":"BOR,PIN,POR","seq":6419,"fs":[1,0,15675411,524288],"radio_stats":null,"mqtt_stats":[1,4]}`,
+			"HB-00031344", 1688666650,
+			[]simpleMetric{
+				{
+					desc:  tempest.Uptime,
+					value: 64275,
+				},
+				{
+					desc:  tempest.Rssi,
+					value: -44,
+				},
+			},
+		},
+		{
+			"short",
+			`{"serial_number":"HB-00031344","type":"hub_status","firmware_revision":"171","uptime":64275,"rssi":-44,"timestamp":1688666650,"reset_flags":"BOR,PIN,POR","seq":6419,"fs":[1,0,15675411,524288],"radio_stats":[1],"mqtt_stats":[1,4]}`,
+			"HB-00031344", 1688666650,
+			[]simpleMetric{
+				{
+					desc:  tempest.Uptime,
+					value: 64275,
+				},
+				{
+					desc:  tempest.Rssi,
+					value: -44,
+				},
+			},
+		},
+	})
+}
+
 type simpleMetric struct {
 	desc   *prometheus.Desc
 	value  float64

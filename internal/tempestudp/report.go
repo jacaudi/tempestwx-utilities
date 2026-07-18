@@ -257,12 +257,21 @@ type HubStatusReport struct {
 }
 
 func (r HubStatusReport) Metrics() []prometheus.Metric {
-	return withTime(r.Timestamp, []prometheus.Metric{
+	metrics := []prometheus.Metric{
 		prometheus.MustNewConstMetric(tempest.Uptime, prometheus.CounterValue, r.Uptime, r.SerialNumber),
 		prometheus.MustNewConstMetric(tempest.Rssi, prometheus.GaugeValue, r.Rssi, r.SerialNumber),
-		prometheus.MustNewConstMetric(tempest.Reboots, prometheus.CounterValue, r.RadioStats[1], r.SerialNumber),
-		prometheus.MustNewConstMetric(tempest.BusErrors, prometheus.CounterValue, r.RadioStats[2], r.SerialNumber),
-	})
+	}
+
+	// radio_stats[1] and [2] (reboots, bus errors) are only present on a
+	// well-formed hub_status broadcast; a malformed/short array must not panic.
+	if len(r.RadioStats) >= 3 {
+		metrics = append(metrics,
+			prometheus.MustNewConstMetric(tempest.Reboots, prometheus.CounterValue, r.RadioStats[1], r.SerialNumber),
+			prometheus.MustNewConstMetric(tempest.BusErrors, prometheus.CounterValue, r.RadioStats[2], r.SerialNumber),
+		)
+	}
+
+	return withTime(r.Timestamp, metrics)
 }
 
 func withTime(unix int64, metrics []prometheus.Metric) []prometheus.Metric {
