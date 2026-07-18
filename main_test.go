@@ -27,6 +27,32 @@ func TestSignalContext_RegistersInterruptAndSIGTERM(t *testing.T) {
 	}
 }
 
+func TestSelectStore(t *testing.T) {
+	tests := []struct {
+		name         string
+		enablePG     bool
+		sqlitePath   string
+		wantPostgres bool
+		wantSQLite   bool
+		wantPath     string
+	}{
+		{"default sqlite", false, "", false, true, "/data/tempest.db"},
+		{"postgres only", true, "", true, false, ""},
+		{"both fan-out", true, "/tmp/x.db", true, true, "/tmp/x.db"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := selectStore(tc.enablePG, tc.sqlitePath)
+			if c.postgres != tc.wantPostgres || c.sqlite != tc.wantSQLite {
+				t.Fatalf("got %+v", c)
+			}
+			if tc.wantSQLite && c.sqlitePath != tc.wantPath {
+				t.Fatalf("path %q want %q", c.sqlitePath, tc.wantPath)
+			}
+		})
+	}
+}
+
 func TestRequireWriters(t *testing.T) {
 	tests := []struct {
 		name        string

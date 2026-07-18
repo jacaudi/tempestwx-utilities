@@ -1,8 +1,10 @@
 package main
 
 import (
+	"cmp"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +19,7 @@ import (
 	"tempestwx-utilities/internal/postgres"
 	"tempestwx-utilities/internal/prometheus"
 	"tempestwx-utilities/internal/sink"
+	"tempestwx-utilities/internal/sqlite"
 	"tempestwx-utilities/internal/tempestapi"
 	"tempestwx-utilities/internal/tempestudp"
 
@@ -59,21 +62,61 @@ func requireWriters(mode Mode, writerCount int, keepFiles bool) error {
 	return fmt.Errorf("no writers configured: set ENABLE_POSTGRES / ENABLE_OTEL / ENABLE_PROMETHEUS_* (or KEEP_EXPORT_FILES in API-export mode)")
 }
 
+// storeChoice is the result of selectStore: which persistence backends to
+// register, and (when sqlite is selected) the path to open it at.
+type storeChoice struct {
+	postgres   bool
+	sqlite     bool
+	sqlitePath string
+}
+
+// selectStore: SQLite is the default store (R2); Postgres is opt-in via
+// ENABLE_POSTGRES. Both may run concurrently (fan-out). SQLite is disabled only
+// when Postgres is the sole configured store AND no SQLITE_PATH override is set.
+func selectStore(enablePostgres bool, sqlitePathEnv string) storeChoice {
+	c := storeChoice{postgres: enablePostgres}
+	if !enablePostgres || sqlitePathEnv != "" {
+		c.sqlite = true
+		c.sqlitePath = cmp.Or(sqlitePathEnv, "/data/tempest.db")
+	}
+	return c
+}
+
 func main() {
 	ctx, done := signalContext(context.Background(), signal.NotifyContext)
 	defer done()
 
 	// Initialize sink for both modes
 	metricsSink := sink.NewMetricsSink()
+
+	// sqliteDB is set below (UDP mode only) when the sqlite store is
+	// selected. It must be closed AFTER the sink drains the sqlite writer
+	// (sink.Close flushes buffered writes) — hence it is closed inside the
+	// same deferred cleanup, after metricsSink.Close returns, rather than via
+	// its own defer (which LIFO ordering would run BEFORE the sink drains).
+	var sqliteDB *sql.DB
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := metricsSink.Close(cleanupCtx); err != nil {
 			slog.Error("sink close", "err", err)
 		}
+		if sqliteDB != nil {
+			if err := sqliteDB.Close(); err != nil {
+				slog.Error("sqlite db close", "err", err)
+			}
+		}
 	}()
 
-	// Configure Prometheus writer (UDP mode only)
+	// Configure Postgres opt-in and select the store(s) (R2: sqlite default,
+	// postgres opt-in; see selectStore).
+	enablePostgres, err := config.ParseBoolEnv("ENABLE_POSTGRES")
+	if err != nil {
+		log.Fatal(err) //nolint:gocritic // log.Fatal on a startup config error exits before any writer buffers data, so the skipped deferred sink Close is harmless
+	}
+	choice := selectStore(enablePostgres, os.Getenv("SQLITE_PATH"))
+
+	// Configure Prometheus + SQLite writers (UDP mode only)
 	token := os.Getenv("TOKEN")
 	if token == "" {
 		enablePushgateway, err := config.ParseBoolEnv("ENABLE_PROMETHEUS_PUSHGATEWAY")
@@ -109,14 +152,26 @@ func main() {
 			}
 			metricsSink.AddWriter(metricsServer)
 		}
+
+		// Configure SQLite writer. UDP-mode only: SQLite.WriteMetrics is a
+		// no-op (design §10 / operational-modes table routes API-export to
+		// Postgres/gz, not sqlite), so registering it in API-export mode
+		// would spuriously satisfy requireWriters while silently writing
+		// nothing. selectStore itself stays mode-agnostic; only this
+		// registration is UDP-gated.
+		if choice.sqlite {
+			sqliteCfg := sqlite.LoadConfig(os.Getenv)
+			db, err := sqlite.Open(ctx, choice.sqlitePath, sqliteCfg)
+			if err != nil {
+				log.Fatalf("failed to open sqlite: %v", err)
+			}
+			sqliteDB = db
+			metricsSink.AddWriter(sqlite.NewWriter(ctx, db, sqliteCfg))
+		}
 	}
 
 	// Configure Postgres writer (both modes)
-	enablePostgres, err := config.ParseBoolEnv("ENABLE_POSTGRES")
-	if err != nil {
-		log.Fatal(err)
-	}
-	if enablePostgres {
+	if choice.postgres {
 		dbConfig, err := config.GetDatabaseConfig()
 		if err != nil {
 			log.Fatalf("database configuration error: %v", err)

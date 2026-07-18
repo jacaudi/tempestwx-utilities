@@ -479,6 +479,8 @@ reintroduced.
 ### External deps
 `modernc.org/sqlite`, `github.com/google/uuid` (already present), Litestream (sidecar binary/image).
 
+> **Note (WS3 execution, 2026-07-18):** adding `modernc.org/sqlite@v1.34.4` + `go mod tidy` raised the module's `go` directive from `1.24.0` to `1.25.0` (via newer transitive `modernc.org/libc`/`golang.org/x/sys`). This is **not** a hard floor of the pinned sqlite version, but it is build-safe on the pinned toolchain (`go1.26.1`) and preserves the `CGO_ENABLED=0` static build, so the floor bump was **accepted** rather than pinned back.
+
 ---
 
 ## 11. Backend JSON API (bridges UI ↔ data)
