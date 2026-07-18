@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestMigrate_CreatesTablesAndVersion(t *testing.T) {
