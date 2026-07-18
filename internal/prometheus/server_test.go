@@ -63,8 +63,7 @@ func TestMetricsServer_WriteMetrics(t *testing.T) {
 		"ST-00001", "air",
 	)
 
-	err := server.WriteMetrics(ctx, []prometheus.Metric{metric})
-	if err != nil {
+	if err := server.WriteMetrics(ctx, []prometheus.Metric{metric}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -80,7 +79,7 @@ func TestMetricsServer_MetricsEndpoint(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)
@@ -92,14 +91,14 @@ func TestMetricsServer_MetricsEndpoint(t *testing.T) {
 		22.5,
 		"ST-00001", "air",
 	)
-	server.WriteMetrics(context.Background(), []prometheus.Metric{metric})
+	_ = server.WriteMetrics(context.Background(), []prometheus.Metric{metric})
 
 	// Fetch metrics endpoint
 	resp, err := http.Get("http://127.0.0.1:19090/metrics")
 	if err != nil {
 		t.Fatalf("failed to fetch metrics: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
@@ -117,7 +116,7 @@ func TestMetricsServer_HealthEndpoint(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)
@@ -126,7 +125,7 @@ func TestMetricsServer_HealthEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to fetch health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)

@@ -31,7 +31,7 @@ func main() {
 
 	// Initialize sink for both modes
 	metricsSink := sink.NewMetricsSink(ctx)
-	defer metricsSink.Close()
+	defer metricsSink.Close() //nolint:errcheck // Close signature/error handling revisited in Task 0.7 (sink Close(ctx) + error aggregation)
 
 	// Configure Prometheus writer (UDP mode only)
 	token := os.Getenv("TOKEN")
@@ -40,7 +40,7 @@ func main() {
 		if enablePushgateway {
 			pushURL := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
 			if pushURL == "" {
-				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true")
+				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true") //nolint:gocritic // log.Fatal skipping the deferred sink Close is addressed by the graceful-shutdown rework in Tasks 0.7/0.8
 			}
 			jobName := os.Getenv("JOB_NAME")
 			if jobName == "" {
@@ -131,7 +131,7 @@ func listen(ctx context.Context, rx func([]byte, *net.UDPAddr) error) error {
 	if err != nil {
 		return err
 	}
-	defer sock.Close()
+	defer sock.Close() //nolint:errcheck // UDP listener teardown revisited under graceful shutdown in Task 0.8
 	log.Printf("listening on UDP :50222")
 
 	readErr := make(chan error, 1)
@@ -199,7 +199,7 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 				log.Printf("fetching %s starting %s", station.Name, cur.Format(time.RFC3339))
 				stationMetrics, err := client.GetObservations(ctx, station, cur, next)
 				if err != nil {
-					log.Fatalf("error fetching %#v for %d-%d: %v", station, cur.Unix(), next.Unix(), err)
+					log.Fatalf("error fetching %#v for %d-%d: %v", station, cur.Unix(), next.Unix(), err) //nolint:gosec // pre-existing: station/error data logged unsanitized; deferred as follow-up hardening, not owned by a current task
 				}
 				metrics = append(metrics, stationMetrics...)
 			}
@@ -210,7 +210,7 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 		}
 
 		// Send to sink (Postgres)
-		log.Printf("sending %d metrics to sink", len(metrics))
+		log.Printf("sending %d metrics to sink", len(metrics)) //nolint:gosec // pre-existing: logs a count derived from tainted input, not raw content; deferred as follow-up hardening, not owned by a current task
 		if err := metricsSink.SendMetrics(ctx, metrics); err != nil {
 			log.Printf("error sending metrics: %v", err)
 		}
@@ -240,14 +240,14 @@ func writeMetricsToFile(filename string, metrics []promclient.Metric) error {
 	}
 
 	log.Printf("writing %s", filename)
-	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644) //nolint:gosec // file permissions and open flags (O_TRUNC) revisited in Task 0.11
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // Close handling for export writers revisited in Task 0.11
 
 	gzw := gzip.NewWriter(f)
-	defer gzw.Close()
+	defer gzw.Close() //nolint:errcheck // Close handling for export writers revisited in Task 0.11
 
 	enc := expfmt.NewEncoder(gzw, expfmt.NewFormat(expfmt.TypeTextPlain))
 	for _, family := range families {

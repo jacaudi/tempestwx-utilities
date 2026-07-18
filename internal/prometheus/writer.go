@@ -31,7 +31,7 @@ func NewPrometheusWriter(pushURL, jobName string) *PrometheusWriter {
 	// Create pusher
 	pusher := push.New(pushURL, jobName).
 		Collector(collector).
-		Format(expfmt.FmtText)
+		Format(expfmt.NewFormat(expfmt.TypeTextPlain))
 
 	w := &PrometheusWriter{
 		pusher: pusher,

@@ -10,20 +10,20 @@ var (
 	Reboots   *prometheus.Desc
 	BusErrors *prometheus.Desc
 
-	Illuminance    *prometheus.Desc
-	UV             *prometheus.Desc
-	RainRate       *prometheus.Desc
-	Wind           *prometheus.Desc // "lull", "avg", "gust", "rapid"
-	WindDirection  *prometheus.Desc
-	Battery        *prometheus.Desc
-	ReportInterval *prometheus.Desc
-	Irradiance     *prometheus.Desc
-	RainTotal      *prometheus.Desc
-	Pressure              *prometheus.Desc
-	Temperature           *prometheus.Desc // "air", "wetbulb"
-	Humidity              *prometheus.Desc
-	LightningDistance     *prometheus.Desc
-	LightningStrikeCount  *prometheus.Desc
+	Illuminance          *prometheus.Desc
+	UV                   *prometheus.Desc
+	RainRate             *prometheus.Desc
+	Wind                 *prometheus.Desc // "lull", "avg", "gust", "rapid"
+	WindDirection        *prometheus.Desc
+	Battery              *prometheus.Desc
+	ReportInterval       *prometheus.Desc
+	Irradiance           *prometheus.Desc
+	RainTotal            *prometheus.Desc
+	Pressure             *prometheus.Desc
+	Temperature          *prometheus.Desc // "air", "wetbulb"
+	Humidity             *prometheus.Desc
+	LightningDistance    *prometheus.Desc
+	LightningStrikeCount *prometheus.Desc
 )
 
 var All []*prometheus.Desc

@@ -40,7 +40,7 @@ func (c Client) ListStations(ctx context.Context) ([]Station, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // client hardening (timeouts, retries, close handling) addressed in Task 0.5
 
 	var data struct {
 		Stations []struct {
@@ -97,7 +97,7 @@ func (c Client) GetObservations(ctx context.Context, station Station, startAt ti
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // client hardening (timeouts, retries, close handling) addressed in Task 0.5
 
 	bytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -113,7 +113,7 @@ func (c Client) GetObservations(ctx context.Context, station Station, startAt ti
 	case *tempestudp.TempestObservationReport:
 		r.SerialNumber = station.serialNumber
 	default:
-		log.Fatalf("unhandled report type")
+		log.Fatalf("unhandled report type") //nolint:gocritic // process-exiting error handling for the API client is reworked in Task 0.5
 	}
 
 	metrics := report.Metrics()

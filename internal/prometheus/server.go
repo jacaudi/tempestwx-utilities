@@ -41,7 +41,9 @@ func NewMetricsServer(port string) *MetricsServer {
 	}))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Printf("metrics: health response write error: %v", err)
+		}
 	})
 
 	addr := ":" + port

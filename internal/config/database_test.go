@@ -1,21 +1,19 @@
 package config
 
 import (
-	"os"
 	"testing"
 )
 
 func TestGetDatabaseConfig_FullURL(t *testing.T) {
 	// Set full connection string
-	os.Setenv("POSTGRES_URL", "postgresql://user:pass@localhost:5432/testdb")
-	defer os.Unsetenv("POSTGRES_URL")
+	t.Setenv("POSTGRES_URL", "postgresql://user:pass@localhost:5432/testdb")
 
 	url, err := GetDatabaseConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := "postgresql://user:pass@localhost:5432/testdb"
+	expected := "postgresql://user:pass@localhost:5432/testdb" //nolint:gosec // test fixture value, not a real credential
 	if url != expected {
 		t.Errorf("got %q, want %q", url, expected)
 	}
@@ -23,63 +21,49 @@ func TestGetDatabaseConfig_FullURL(t *testing.T) {
 
 func TestGetDatabaseConfig_Components(t *testing.T) {
 	// Clear POSTGRES_URL
-	os.Unsetenv("POSTGRES_URL")
+	t.Setenv("POSTGRES_URL", "")
 
 	// Set individual components
-	os.Setenv("POSTGRES_HOST", "postgres")
-	os.Setenv("POSTGRES_PORT", "5433")
-	os.Setenv("POSTGRES_USERNAME", "tempest")
-	os.Setenv("POSTGRES_PASSWORD", "secret")
-	os.Setenv("POSTGRES_NAME", "weather")
-	os.Setenv("POSTGRES_SSLMODE", "require")
-	defer func() {
-		os.Unsetenv("POSTGRES_HOST")
-		os.Unsetenv("POSTGRES_PORT")
-		os.Unsetenv("POSTGRES_USERNAME")
-		os.Unsetenv("POSTGRES_PASSWORD")
-		os.Unsetenv("POSTGRES_NAME")
-		os.Unsetenv("POSTGRES_SSLMODE")
-	}()
+	t.Setenv("POSTGRES_HOST", "postgres")
+	t.Setenv("POSTGRES_PORT", "5433")
+	t.Setenv("POSTGRES_USERNAME", "tempest")
+	t.Setenv("POSTGRES_PASSWORD", "secret")
+	t.Setenv("POSTGRES_NAME", "weather")
+	t.Setenv("POSTGRES_SSLMODE", "require")
 
 	url, err := GetDatabaseConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := "postgresql://tempest:secret@postgres:5433/weather?sslmode=require"
+	expected := "postgresql://tempest:secret@postgres:5433/weather?sslmode=require" //nolint:gosec // test fixture value, not a real credential
 	if url != expected {
 		t.Errorf("got %q, want %q", url, expected)
 	}
 }
 
 func TestGetDatabaseConfig_ComponentDefaults(t *testing.T) {
-	os.Unsetenv("POSTGRES_URL")
-	os.Setenv("POSTGRES_HOST", "postgres")
-	os.Setenv("POSTGRES_USERNAME", "user")
-	os.Setenv("POSTGRES_PASSWORD", "pass")
-	os.Setenv("POSTGRES_NAME", "db")
+	t.Setenv("POSTGRES_URL", "")
+	t.Setenv("POSTGRES_HOST", "postgres")
+	t.Setenv("POSTGRES_USERNAME", "user")
+	t.Setenv("POSTGRES_PASSWORD", "pass")
+	t.Setenv("POSTGRES_NAME", "db")
 	// Don't set PORT or SSLMODE - should use defaults
-	defer func() {
-		os.Unsetenv("POSTGRES_HOST")
-		os.Unsetenv("POSTGRES_USERNAME")
-		os.Unsetenv("POSTGRES_PASSWORD")
-		os.Unsetenv("POSTGRES_NAME")
-	}()
 
 	url, err := GetDatabaseConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := "postgresql://user:pass@postgres:5432/db?sslmode=disable"
+	expected := "postgresql://user:pass@postgres:5432/db?sslmode=disable" //nolint:gosec // test fixture value, not a real credential
 	if url != expected {
 		t.Errorf("got %q, want %q", url, expected)
 	}
 }
 
 func TestGetDatabaseConfig_NoConfig(t *testing.T) {
-	os.Unsetenv("POSTGRES_URL")
-	os.Unsetenv("POSTGRES_HOST")
+	t.Setenv("POSTGRES_URL", "")
+	t.Setenv("POSTGRES_HOST", "")
 
 	url, err := GetDatabaseConfig()
 	if err != nil {
@@ -124,12 +108,11 @@ func TestGetDatabaseConfig_MissingRequired(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Unsetenv("POSTGRES_URL")
+			t.Setenv("POSTGRES_URL", "")
 
 			// Set provided vars
 			for k, v := range tt.envVars {
-				os.Setenv(k, v)
-				defer os.Unsetenv(k)
+				t.Setenv(k, v)
 			}
 
 			_, err := GetDatabaseConfig()

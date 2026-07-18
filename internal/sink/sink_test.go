@@ -13,13 +13,13 @@ import (
 
 // Mock writer for testing
 type mockWriter struct {
-	reportCalls  int
-	metricCalls  int
-	reportErr    error
-	metricsErr   error
-	flushCalled  bool
-	closeCalled  bool
-	mu           sync.Mutex
+	reportCalls int
+	metricCalls int
+	reportErr   error
+	metricsErr  error
+	flushCalled bool
+	closeCalled bool
+	mu          sync.Mutex
 }
 
 func (m *mockWriter) WriteReport(ctx context.Context, report tempestudp.Report) error {

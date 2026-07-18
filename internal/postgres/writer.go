@@ -165,6 +165,15 @@ func (w *PostgresWriter) batchObservations() {
 	}
 }
 
+// closeBatchResults closes a pgx batch result set, logging any error.
+// A close error here is not actionable by the caller (per-statement errors
+// are already surfaced by br.Exec()), so it is logged rather than returned.
+func closeBatchResults(br pgx.BatchResults) {
+	if err := br.Close(); err != nil {
+		log.Printf("postgres: batch close error: %v", err)
+	}
+}
+
 func (w *PostgresWriter) flushObservations(batch []observationRow) {
 	w.flushWithRetry(func() error {
 		return w.insertObservations(batch)
@@ -201,7 +210,7 @@ func (w *PostgresWriter) insertObservations(batch []observationRow) error {
 	}
 
 	br := w.pool.SendBatch(ctx, b)
-	defer br.Close()
+	defer closeBatchResults(br)
 
 	for i := 0; i < len(batch); i++ {
 		_, err := br.Exec()
@@ -282,7 +291,7 @@ func (w *PostgresWriter) insertRapidWind(batch []rapidWindRow) error {
 	}
 
 	br := w.pool.SendBatch(ctx, b)
-	defer br.Close()
+	defer closeBatchResults(br)
 
 	for i := 0; i < len(batch); i++ {
 		_, err := br.Exec()
@@ -358,7 +367,7 @@ func (w *PostgresWriter) insertHubStatus(batch []hubStatusRow) error {
 	}
 
 	br := w.pool.SendBatch(ctx, b)
-	defer br.Close()
+	defer closeBatchResults(br)
 
 	for i := 0; i < len(batch); i++ {
 		_, err := br.Exec()
@@ -414,7 +423,7 @@ func (w *PostgresWriter) insertEvents(batch []eventRow) error {
 	}
 
 	br := w.pool.SendBatch(ctx, b)
-	defer br.Close()
+	defer closeBatchResults(br)
 
 	for i := 0; i < len(batch); i++ {
 		_, err := br.Exec()
