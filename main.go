@@ -37,6 +37,28 @@ func signalContext(parent context.Context, notify notifyFunc) (context.Context, 
 	return notify(parent, os.Interrupt, syscall.SIGTERM)
 }
 
+// Mode identifies which operational mode main is running in, since the
+// "at least one writer" invariant differs between them (see requireWriters).
+type Mode int
+
+const (
+	ModeUDP       Mode = iota // UDP listener (no TOKEN)
+	ModeAPIExport             // historical export (TOKEN set)
+)
+
+// requireWriters enforces the "at least one writer" invariant, but only where
+// it applies: UDP mode always needs a writer; API-export mode is satisfied by a
+// DB writer OR KEEP_EXPORT_FILES (fixes A-H2 — gzip-only export was unreachable).
+func requireWriters(mode Mode, writerCount int, keepFiles bool) error {
+	if writerCount > 0 {
+		return nil
+	}
+	if mode == ModeAPIExport && keepFiles {
+		return nil
+	}
+	return fmt.Errorf("no writers configured: set ENABLE_POSTGRES / ENABLE_OTEL / ENABLE_PROMETHEUS_* (or KEEP_EXPORT_FILES in API-export mode)")
+}
+
 func main() {
 	ctx, done := signalContext(context.Background(), signal.NotifyContext)
 	defer done()
@@ -109,9 +131,17 @@ func main() {
 		metricsSink.AddWriter(pgWriter)
 	}
 
-	// Require at least one writer
-	if metricsSink.WriterCount() == 0 {
-		log.Fatal("no writers configured - set ENABLE_PROMETHEUS_PUSHGATEWAY, ENABLE_PROMETHEUS_METRICS, and/or ENABLE_POSTGRES")
+	// Require at least one writer (relaxed for gzip-only API-export mode; see requireWriters)
+	mode := ModeUDP
+	if token != "" {
+		mode = ModeAPIExport
+	}
+	keepFiles, err := config.ParseBoolEnv("KEEP_EXPORT_FILES")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := requireWriters(mode, metricsSink.WriterCount(), keepFiles); err != nil {
+		log.Fatal(err)
 	}
 
 	// Choose operational mode
@@ -273,7 +303,7 @@ func writeMetricsToFile(filename string, metrics []promclient.Metric) error {
 	}
 
 	log.Printf("writing %s", filename)
-	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644) //nolint:gosec // file permissions and open flags (O_TRUNC) revisited in Task 0.11
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) //nolint:gosec // G302/G304: 0o644 perms and export filename are intentional, not user-controlled in a way that risks traversal
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
 	}

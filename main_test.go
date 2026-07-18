@@ -26,3 +26,27 @@ func TestSignalContext_RegistersInterruptAndSIGTERM(t *testing.T) {
 		t.Fatalf("signalContext must register SIGINT+SIGTERM, got %v", gotSigs)
 	}
 }
+
+func TestRequireWriters(t *testing.T) {
+	tests := []struct {
+		name        string
+		mode        Mode
+		writerCount int
+		keepFiles   bool
+		wantErr     bool
+	}{
+		{"udp no writers", ModeUDP, 0, false, true},
+		{"udp one writer", ModeUDP, 1, false, false},
+		{"api no writers no files", ModeAPIExport, 0, false, true},
+		{"api no writers keep files", ModeAPIExport, 0, true, false},
+		{"api db writer", ModeAPIExport, 1, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireWriters(tc.mode, tc.writerCount, tc.keepFiles)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("requireWriters(%v,%d,%v) err=%v want err=%v", tc.mode, tc.writerCount, tc.keepFiles, err, tc.wantErr)
+			}
+		})
+	}
+}
