@@ -1,0 +1,663 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log/slog"
+	"math"
+	"sync"
+	"time"
+
+	"tempestwx-utilities/internal/tempestudp"
+
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+const (
+	// rowChanCap bounds the single writer's inbound queue. 1000 mirrors the
+	// postgres writer's per-channel buffer — at ~1 obs/min plus 3s rapid-wind,
+	// 1000 is minutes of headroom before backpressure engages.
+	rowChanCap = 1000
+	// eventBlockTimeout is how long a DISCRETE event (lightning/rain-start)
+	// will block when the channel is full before it is logged-and-dropped.
+	// Chosen shorter than the 30s shutdown budget yet long enough for the
+	// single writer to complete at least one batch flush; a discrete event is
+	// rare, so blocking briefly is correct, not silent loss.
+	eventBlockTimeout = 5 * time.Second
+)
+
+// rowKind discriminates the payload carried by a rowEnvelope.
+type rowKind int
+
+const (
+	kindObservation rowKind = iota
+	kindRapidWind
+	kindHubStatus
+	kindEvent
+	// kindFlush carries a flushRequest rather than a table row (see Flush).
+	// It is sent through the same w.rows channel as every other envelope so
+	// it is FIFO-ordered relative to rows enqueued before it — sending a
+	// flush signal on a SEPARATE channel would race with w.rows: Go's select
+	// gives no ordering guarantee across two different channels, so the
+	// writer goroutine could process a flush request before a row sent
+	// microseconds earlier, silently flushing an empty batch while the real
+	// row was still unprocessed.
+	kindFlush
+)
+
+// String implements fmt.Stringer for use in log fields.
+func (k rowKind) String() string {
+	switch k {
+	case kindObservation:
+		return "observation"
+	case kindRapidWind:
+		return "rapid_wind"
+	case kindHubStatus:
+		return "hub_status"
+	case kindEvent:
+		return "event"
+	case kindFlush:
+		return "flush"
+	default:
+		return "unknown"
+	}
+}
+
+// rowEnvelope carries one row destined for one of the four tables through
+// the single writer's inbound channel. kind discriminates the concrete type
+// held in payload (observationRow, rapidWindRow, hubStatusRow, or eventRow).
+type rowEnvelope struct {
+	kind    rowKind
+	payload any
+}
+
+// observationRow mirrors tempest_observations. Nullable columns (the "if
+// len(ob) >= N" fields in the UDP report) use pointers so a nil is stored as
+// SQL NULL rather than a zero value — see internal/postgres/writer.go's
+// observationRow, which this mirrors field-for-field except that the
+// INTEGER-typed columns here (wind_sample_interval, precip_type,
+// lightning_strike_count, report_interval) are *int64, not *float64 (fix
+// B-LOW: the SQLite DDL declares these INTEGER), and timestamp is a raw
+// unix-epoch int64 rather than time.Time (design §12: SQLite stores epoch
+// integers, not TIMESTAMPTZ).
+type observationRow struct {
+	id                   uuid.UUID
+	serialNumber         string
+	timestamp            int64
+	windLull             float64
+	windAvg              float64
+	windGust             float64
+	windDirection        float64
+	windSampleInterval   *int64
+	pressure             float64
+	tempAir              float64
+	tempWetbulb          *float64 // nil (SQL NULL) when WetBulbTemperatureC is non-convergent (NaN)
+	humidity             float64
+	illuminance          float64
+	uvIndex              float64
+	irradiance           float64
+	rainRate             float64
+	precipType           *int64
+	lightningDistance    *float64
+	lightningStrikeCount *int64
+	battery              *float64
+	reportInterval       *int64
+}
+
+type rapidWindRow struct {
+	id            uuid.UUID
+	serialNumber  string
+	timestamp     int64
+	windSpeed     float64
+	windDirection float64
+}
+
+type hubStatusRow struct {
+	id           uuid.UUID
+	serialNumber string
+	timestamp    int64
+	uptime       int64
+	rssi         float64
+	rebootCount  int64
+	busErrors    int64
+}
+
+type eventRow struct {
+	id           uuid.UUID
+	serialNumber string
+	timestamp    int64
+	eventType    string
+	distanceKm   *float64
+	energy       *float64
+}
+
+// flushRequest is the payload of a kindFlush rowEnvelope: it asks the writer
+// goroutine to flush its currently-pending local batches synchronously; done
+// is closed once the flush completes so Flush can block until it's actually
+// on disk.
+type flushRequest struct {
+	ctx  context.Context
+	done chan struct{}
+}
+
+// Writer implements sink.MetricsWriter for the SQLite store. A single
+// goroutine (run) owns all writes to db, consuming one buffered channel of
+// rowEnvelope and batching per table by BatchSize/FlushInterval — SQLite is
+// single-writer, so serializing every insert through one goroutine (backed
+// by db.SetMaxOpenConns(1) in Open) is what avoids SQLITE_BUSY, and it makes
+// the shutdown drain trivially correct (design §10).
+type Writer struct {
+	db *sql.DB
+
+	rows chan rowEnvelope
+
+	batchSize     int
+	flushInterval time.Duration
+
+	wg sync.WaitGroup
+
+	// done is the sole shutdown signal: closing it tells every producer send
+	// (enqueue/enqueueEvent) and the writer goroutine that Close is in
+	// progress. w.rows is never closed, so a concurrent producer send can
+	// never panic on a send-on-closed-channel (mirrors the postgres writer's
+	// D-H1 fix).
+	done      chan struct{}
+	closeOnce sync.Once
+
+	// shutdownCtx is the live ctx the writer goroutine uses for its final
+	// drain-and-flush on <-done — never a stored construction-time ctx, which
+	// SIGTERM may have already canceled by the time Close runs in production
+	// (mirrors the postgres writer's C-H1 fix and shutdownCtx field comment).
+	// Close sets shutdownCtx before close(done); the Go memory model
+	// guarantees that write happens-before the goroutine's <-done case fires,
+	// so this plain field is safely visible without a mutex.
+	shutdownCtx context.Context
+}
+
+// NewWriter starts the single writer goroutine and returns a Writer backed
+// by db (opened and migrated via Open). ctx bounds only the writer's normal
+// (non-shutdown) database operations; Close(ctx) supplies the live context
+// used for the final drain-and-flush. NewWriter does not take ownership of
+// db — db was created by the caller (via Open), and Close does not close it;
+// the caller remains responsible for db.Close() once every writer using it
+// has been closed.
+func NewWriter(ctx context.Context, db *sql.DB, cfg Config) *Writer {
+	w := &Writer{
+		db:            db,
+		rows:          make(chan rowEnvelope, rowChanCap),
+		batchSize:     cfg.BatchSize,
+		flushInterval: cfg.FlushInterval,
+		done:          make(chan struct{}),
+	}
+	w.wg.Add(1)
+	go w.run(ctx)
+	return w
+}
+
+// run is the single writer goroutine: it owns all local batch state and is
+// the only goroutine that ever touches db.
+func (w *Writer) run(ctx context.Context) {
+	defer w.wg.Done()
+
+	var (
+		obsBatch  []observationRow
+		windBatch []rapidWindRow
+		hubBatch  []hubStatusRow
+		evtBatch  []eventRow
+	)
+
+	flush := func(fctx context.Context) {
+		if len(obsBatch) > 0 {
+			w.insertObservations(fctx, obsBatch)
+			obsBatch = obsBatch[:0]
+		}
+		if len(windBatch) > 0 {
+			w.insertRapidWind(fctx, windBatch)
+			windBatch = windBatch[:0]
+		}
+		if len(hubBatch) > 0 {
+			w.insertHubStatus(fctx, hubBatch)
+			hubBatch = hubBatch[:0]
+		}
+		if len(evtBatch) > 0 {
+			w.insertEvents(fctx, evtBatch)
+			evtBatch = evtBatch[:0]
+		}
+	}
+
+	ticker := time.NewTicker(w.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case env := <-w.rows:
+			if env.kind == kindFlush {
+				// A control message, not a row: flush whatever is pending
+				// using the request's own ctx, then signal completion. FIFO
+				// order on this single channel guarantees every row enqueued
+				// before this Flush call was already appended above.
+				req := env.payload.(flushRequest)
+				flush(req.ctx)
+				close(req.done)
+				continue
+			}
+			obsBatch, windBatch, hubBatch, evtBatch = appendEnvelope(env, obsBatch, windBatch, hubBatch, evtBatch)
+			if len(obsBatch) >= w.batchSize || len(windBatch) >= w.batchSize ||
+				len(hubBatch) >= w.batchSize || len(evtBatch) >= w.batchSize {
+				flush(ctx)
+			}
+
+		case <-ticker.C:
+			flush(ctx)
+
+		case <-w.done:
+			// Drain whatever is still buffered in w.rows (non-blocking): the
+			// channel is never closed, so a concurrent producer may have sent
+			// a row just before observing <-w.done, and that row must still
+			// reach the DB rather than being silently lost (fixes the class
+			// of C-H1 — the postgres writer's drain only covered a local
+			// slice, not the channel buffer).
+			for {
+				var env rowEnvelope
+				select {
+				case env = <-w.rows:
+				default:
+					flush(w.shutdownCtx)
+					return
+				}
+				if env.kind == kindFlush {
+					// An in-flight Flush() call raced Close(): satisfy it
+					// with the shutdown flush that's about to happen rather
+					// than dropping it silently (Flush's own select also
+					// falls back to <-w.done, so this isn't load-bearing for
+					// correctness, but it's more honest than a silent drop).
+					close(env.payload.(flushRequest).done)
+					continue
+				}
+				obsBatch, windBatch, hubBatch, evtBatch = appendEnvelope(env, obsBatch, windBatch, hubBatch, evtBatch)
+			}
+		}
+	}
+}
+
+// appendEnvelope routes env's payload into the batch slice matching its
+// kind. The single switch here is the one place the kind -> slice mapping
+// lives, shared by both run's normal receive case and its shutdown drain
+// loop.
+func appendEnvelope(
+	env rowEnvelope,
+	obsBatch []observationRow, windBatch []rapidWindRow, hubBatch []hubStatusRow, evtBatch []eventRow,
+) ([]observationRow, []rapidWindRow, []hubStatusRow, []eventRow) {
+	switch env.kind {
+	case kindObservation:
+		obsBatch = append(obsBatch, env.payload.(observationRow))
+	case kindRapidWind:
+		windBatch = append(windBatch, env.payload.(rapidWindRow))
+	case kindHubStatus:
+		hubBatch = append(hubBatch, env.payload.(hubStatusRow))
+	case kindEvent:
+		evtBatch = append(evtBatch, env.payload.(eventRow))
+	}
+	return obsBatch, windBatch, hubBatch, evtBatch
+}
+
+// enqueue sends a CONTINUOUS row (observation/rapid_wind/hub_status).
+// Non-blocking: if the channel is momentarily saturated, the row is dropped
+// with a warning rather than blocking the caller — a fresh observation
+// supersedes a dropped one within the next report interval anyway.
+func (w *Writer) enqueue(ctx context.Context, r rowEnvelope) error {
+	select {
+	case w.rows <- r:
+		return nil
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		slog.Warn("sqlite: row channel full, dropping continuous row", "kind", r.kind)
+		return nil
+	}
+}
+
+// enqueueEvent sends a DISCRETE event row (lightning strike / rain start).
+// Unlike enqueue, it blocks up to eventBlockTimeout rather than dropping
+// immediately: a discrete event has no "next one supersedes it" replacement,
+// so a rare period of saturation must not silently lose it (fixes C-MEDIUM).
+func (w *Writer) enqueueEvent(ctx context.Context, r rowEnvelope) error {
+	t := time.NewTimer(eventBlockTimeout)
+	defer t.Stop()
+	select {
+	case w.rows <- r:
+		return nil
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		slog.Warn("sqlite: event channel full after block timeout, dropping event", "kind", r.kind)
+		return nil
+	}
+}
+
+// WriteReport implements sink.MetricsWriter.
+func (w *Writer) WriteReport(ctx context.Context, report tempestudp.Report) error {
+	switch r := report.(type) {
+	case *tempestudp.TempestObservationReport:
+		return w.handleObservationReport(ctx, r)
+	case *tempestudp.RapidWindReport:
+		return w.handleRapidWindReport(ctx, r)
+	case *tempestudp.HubStatusReport:
+		return w.handleHubStatusReport(ctx, r)
+	case *tempestudp.RainStartReport:
+		return w.handleRainStartReport(ctx, r)
+	case *tempestudp.LightningStrikeReport:
+		return w.handleLightningStrikeReport(ctx, r)
+	default:
+		// Unknown report type (e.g. device_status) - not an error.
+		return nil
+	}
+}
+
+// handleObservationReport mirrors internal/postgres/writer.go's
+// handleObservationReport field-for-field (see that file's comment at
+// handleObservationReport for the field-index table), except INTEGER-typed
+// columns are converted to int64 (fix B-LOW) and timestamp is stored as a
+// raw unix-epoch int64 (design §12).
+func (w *Writer) handleObservationReport(ctx context.Context, r *tempestudp.TempestObservationReport) error {
+	for _, ob := range r.Obs {
+		if len(ob) < 13 {
+			continue
+		}
+
+		wetBulb := tempestudp.WetBulbTemperatureC(ob[7], ob[8], ob[6])
+
+		row := observationRow{
+			id:            uuid.Must(uuid.NewV7()),
+			serialNumber:  r.SerialNumber,
+			timestamp:     int64(ob[0]),
+			windLull:      ob[1],
+			windAvg:       ob[2],
+			windGust:      ob[3],
+			windDirection: ob[4],
+			pressure:      ob[6], // raw mb value (no conversion)
+			tempAir:       ob[7],
+			humidity:      ob[8],
+			illuminance:   ob[9],
+			uvIndex:       ob[10],
+			irradiance:    ob[11],
+			rainRate:      ob[12],
+		}
+
+		// WetBulbTemperatureC returns NaN for non-convergent inputs; store
+		// SQL NULL rather than IEEE NaN (mirrors the same guard in
+		// tempestudp/report.go and postgres's handleObservationReport).
+		if !math.IsNaN(wetBulb) {
+			row.tempWetbulb = &wetBulb
+		}
+
+		if len(ob) >= 6 {
+			interval := int64(ob[5])
+			row.windSampleInterval = &interval
+		}
+		if len(ob) >= 14 {
+			precipType := int64(ob[13])
+			row.precipType = &precipType
+		}
+		if len(ob) >= 16 {
+			distance := ob[14]
+			count := int64(ob[15])
+			row.lightningDistance = &distance
+			row.lightningStrikeCount = &count
+		}
+		if len(ob) >= 17 {
+			battery := ob[16]
+			row.battery = &battery
+		}
+		if len(ob) >= 18 {
+			interval := int64(ob[17])
+			row.reportInterval = &interval
+		}
+
+		// Continuous row: non-blocking enqueue.
+		if err := w.enqueue(ctx, rowEnvelope{kind: kindObservation, payload: row}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *Writer) handleRapidWindReport(ctx context.Context, r *tempestudp.RapidWindReport) error {
+	if len(r.Ob) != 3 {
+		return nil // invalid data
+	}
+	row := rapidWindRow{
+		id:            uuid.Must(uuid.NewV7()),
+		serialNumber:  r.SerialNumber,
+		timestamp:     int64(r.Ob[0]),
+		windSpeed:     r.Ob[1],
+		windDirection: r.Ob[2],
+	}
+	return w.enqueue(ctx, rowEnvelope{kind: kindRapidWind, payload: row})
+}
+
+func (w *Writer) handleHubStatusReport(ctx context.Context, r *tempestudp.HubStatusReport) error {
+	if len(r.RadioStats) < 3 {
+		return nil // invalid data
+	}
+	row := hubStatusRow{
+		id:           uuid.Must(uuid.NewV7()),
+		serialNumber: r.SerialNumber,
+		timestamp:    r.Timestamp,
+		uptime:       int64(r.Uptime),
+		rssi:         r.Rssi,
+		rebootCount:  int64(r.RadioStats[1]),
+		busErrors:    int64(r.RadioStats[2]),
+	}
+	return w.enqueue(ctx, rowEnvelope{kind: kindHubStatus, payload: row})
+}
+
+func (w *Writer) handleRainStartReport(ctx context.Context, r *tempestudp.RainStartReport) error {
+	if len(r.Evt) < 1 {
+		return nil // invalid data
+	}
+	row := eventRow{
+		id:           uuid.Must(uuid.NewV7()),
+		serialNumber: r.SerialNumber,
+		timestamp:    int64(r.Evt[0]),
+		eventType:    "rain_start",
+	}
+	// Discrete event: bounded-block enqueue (fixes C-MEDIUM).
+	return w.enqueueEvent(ctx, rowEnvelope{kind: kindEvent, payload: row})
+}
+
+func (w *Writer) handleLightningStrikeReport(ctx context.Context, r *tempestudp.LightningStrikeReport) error {
+	if len(r.Evt) < 3 {
+		return nil // invalid data
+	}
+	distance := r.Evt[1]
+	energy := r.Evt[2]
+	row := eventRow{
+		id:           uuid.Must(uuid.NewV7()),
+		serialNumber: r.SerialNumber,
+		timestamp:    int64(r.Evt[0]),
+		eventType:    "lightning_strike",
+		distanceKm:   &distance,
+		energy:       &energy,
+	}
+	return w.enqueueEvent(ctx, rowEnvelope{kind: kindEvent, payload: row})
+}
+
+// WriteMetrics implements sink.MetricsWriter as a documented no-op. SQLite is
+// the UDP-mode real-time store, not an API-export target: API export mode
+// writes to Postgres/gz files (see CLAUDE.md's operational-modes table), so
+// there is no present consumer for reconstructing observations from
+// Prometheus metrics here (that logic already lives in
+// postgres.PostgresWriter.WriteMetrics) — building it for SQLite would be
+// YAGNI.
+func (w *Writer) WriteMetrics(_ context.Context, _ []prometheus.Metric) error {
+	return nil
+}
+
+// Flush forces the writer goroutine to flush its currently-pending local
+// batches to db and blocks until that flush completes. It is sent as a
+// kindFlush rowEnvelope through the SAME w.rows channel every row travels
+// through (never a separate channel) so it is FIFO-ordered after every row
+// enqueued before this call — see the kindFlush constant's comment for why a
+// separate channel would race.
+func (w *Writer) Flush(ctx context.Context) error {
+	req := flushRequest{ctx: ctx, done: make(chan struct{})}
+	select {
+	case w.rows <- rowEnvelope{kind: kindFlush, payload: req}:
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-req.done:
+		return nil
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close implements sink.MetricsWriter. Idempotent (sync.Once) and
+// panic-free. It signals the writer goroutine to drain w.rows and flush its
+// final batch using ctx, then waits for it to finish. Close does not close
+// db — NewWriter did not create it, so ownership stays with whoever called
+// Open.
+func (w *Writer) Close(ctx context.Context) error {
+	w.closeOnce.Do(func() {
+		// Set shutdownCtx before close(done): this write happens-before
+		// close(w.done), which happens-before run's <-w.done case firing
+		// (Go memory model), so run is guaranteed to see this live ctx.
+		w.shutdownCtx = ctx
+		close(w.done)
+		w.wg.Wait()
+	})
+	return nil
+}
+
+// execBatch runs execRow for each element of batch inside a single
+// transaction against db, using a prepared statement built from query. This
+// is the one place the "batch insert in a transaction with a prepared
+// statement" mechanics live — if that changed (e.g. added retry logic), all
+// four insert*/table pairs below would need to change together, which is
+// exactly the shared-knowledge test DRY asks for extraction to pass. The
+// per-table SQL and argument binding stay in each insert* function, since
+// those differ per table and are not shared knowledge.
+func execBatch[T any](ctx context.Context, db *sql.DB, query string, batch []T, execRow func(stmt *sql.Stmt, row T) error) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("prepare statement: %w", err)
+	}
+	defer func() {
+		_ = stmt.Close()
+	}()
+
+	for i, row := range batch {
+		if err := execRow(stmt, row); err != nil {
+			return fmt.Errorf("exec row %d: %w", i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit batch: %w", err)
+	}
+	return nil
+}
+
+const insertObservationSQL = `
+	INSERT INTO tempest_observations (
+		id, serial_number, timestamp,
+		wind_lull, wind_avg, wind_gust, wind_direction, wind_sample_interval,
+		pressure, temp_air, temp_wetbulb, humidity,
+		illuminance, uv_index, irradiance, rain_rate, precip_type,
+		lightning_distance, lightning_strike_count,
+		battery, report_interval
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT (serial_number, timestamp) DO NOTHING
+`
+
+func (w *Writer) insertObservations(ctx context.Context, batch []observationRow) {
+	err := execBatch(ctx, w.db, insertObservationSQL, batch, func(stmt *sql.Stmt, row observationRow) error {
+		_, err := stmt.ExecContext(ctx,
+			row.id.String(), row.serialNumber, row.timestamp,
+			row.windLull, row.windAvg, row.windGust, row.windDirection, row.windSampleInterval,
+			row.pressure, row.tempAir, row.tempWetbulb, row.humidity,
+			row.illuminance, row.uvIndex, row.irradiance, row.rainRate, row.precipType,
+			row.lightningDistance, row.lightningStrikeCount,
+			row.battery, row.reportInterval)
+		return err
+	})
+	if err != nil {
+		slog.Error("sqlite: insert observations failed", "error", err, "rows", len(batch))
+	}
+}
+
+const insertRapidWindSQL = `
+	INSERT INTO tempest_rapid_wind (
+		id, serial_number, timestamp, wind_speed, wind_direction
+	) VALUES (?, ?, ?, ?, ?)
+	ON CONFLICT (serial_number, timestamp) DO NOTHING
+`
+
+func (w *Writer) insertRapidWind(ctx context.Context, batch []rapidWindRow) {
+	err := execBatch(ctx, w.db, insertRapidWindSQL, batch, func(stmt *sql.Stmt, row rapidWindRow) error {
+		_, err := stmt.ExecContext(ctx, row.id.String(), row.serialNumber, row.timestamp, row.windSpeed, row.windDirection)
+		return err
+	})
+	if err != nil {
+		slog.Error("sqlite: insert rapid_wind failed", "error", err, "rows", len(batch))
+	}
+}
+
+const insertHubStatusSQL = `
+	INSERT INTO tempest_hub_status (
+		id, serial_number, timestamp, uptime, rssi, reboot_count, bus_errors
+	) VALUES (?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT (serial_number, timestamp) DO NOTHING
+`
+
+func (w *Writer) insertHubStatus(ctx context.Context, batch []hubStatusRow) {
+	err := execBatch(ctx, w.db, insertHubStatusSQL, batch, func(stmt *sql.Stmt, row hubStatusRow) error {
+		_, err := stmt.ExecContext(ctx, row.id.String(), row.serialNumber, row.timestamp, row.uptime, row.rssi, row.rebootCount, row.busErrors)
+		return err
+	})
+	if err != nil {
+		slog.Error("sqlite: insert hub_status failed", "error", err, "rows", len(batch))
+	}
+}
+
+const insertEventSQL = `
+	INSERT INTO tempest_events (
+		id, serial_number, timestamp, event_type, distance_km, energy
+	) VALUES (?, ?, ?, ?, ?, ?)
+	ON CONFLICT (serial_number, timestamp, event_type) DO NOTHING
+`
+
+func (w *Writer) insertEvents(ctx context.Context, batch []eventRow) {
+	err := execBatch(ctx, w.db, insertEventSQL, batch, func(stmt *sql.Stmt, row eventRow) error {
+		_, err := stmt.ExecContext(ctx, row.id.String(), row.serialNumber, row.timestamp, row.eventType, row.distanceKm, row.energy)
+		return err
+	})
+	if err != nil {
+		slog.Error("sqlite: insert events failed", "error", err, "rows", len(batch))
+	}
+}
