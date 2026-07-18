@@ -57,6 +57,7 @@ func TestPostgresWriter_RouteObservation(t *testing.T) {
 		hubBatch:   make(chan hubStatusRow, 10),
 		eventBatch: make(chan eventRow, 10),
 		ctx:        ctx,
+		done:       make(chan struct{}),
 	}
 
 	report := &tempestudp.TempestObservationReport{
@@ -148,6 +149,7 @@ func TestPostgresWriter_DrainOnClose(t *testing.T) {
 		flushInterval: time.Second,
 		maxRetries:    3,
 		ctx:           workerCtx,
+		done:          make(chan struct{}),
 		obsInserter:   fake,
 	}
 
@@ -171,4 +173,99 @@ func TestPostgresWriter_DrainOnClose(t *testing.T) {
 	if got := fake.count(); got != wantRows {
 		t.Fatalf("expected %d rows drained via Close, got %d", wantRows, got)
 	}
+}
+
+// TestPostgresClose_Idempotent proves Close(ctx) can be called more than
+// once without panicking (C-H3: the old implementation unconditionally
+// closed the four batch channels on every call, so a second Close double-
+// closed them).
+func TestPostgresClose_Idempotent(t *testing.T) {
+	w := &PostgresWriter{
+		obsBatch:   make(chan observationRow, 10),
+		windBatch:  make(chan rapidWindRow, 10),
+		hubBatch:   make(chan hubStatusRow, 10),
+		eventBatch: make(chan eventRow, 10),
+		ctx:        t.Context(),
+		done:       make(chan struct{}),
+	}
+
+	ctx := t.Context()
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// TestPostgresWriteDuringClose_NoPanic proves WriteReport (which sends into
+// the batch channels) can run concurrently with Close without a
+// send-on-closed-channel panic (D-H1), and that Close still returns
+// promptly rather than deadlocking on a drain of a never-closed channel.
+func TestPostgresWriteDuringClose_NoPanic(t *testing.T) {
+	workerCtx, cancelWorkerCtx := context.WithCancel(t.Context())
+	defer cancelWorkerCtx()
+
+	w := &PostgresWriter{
+		obsBatch:      make(chan observationRow, 10),
+		windBatch:     make(chan rapidWindRow, 10),
+		hubBatch:      make(chan hubStatusRow, 10),
+		eventBatch:    make(chan eventRow, 10),
+		batchSize:     100,
+		flushInterval: time.Second,
+		maxRetries:    3,
+		ctx:           workerCtx,
+		done:          make(chan struct{}),
+		obsInserter:   &fakeObsInserter{},
+	}
+
+	w.wg.Add(4)
+	go w.batchObservations()
+	go w.batchRapidWind()
+	go w.batchHubStatus()
+	go w.batchEvents()
+
+	report := &tempestudp.TempestObservationReport{
+		SerialNumber: "ST-RACE",
+		Obs: [][]float64{
+			{1234567890, 1, 1, 1, 1, 1, 1013.25, 20, 75, 50000, 3, 500, 0.5, 0, 0, 0, 3.5, 1},
+		},
+	}
+
+	stop := make(chan struct{})
+	var producers sync.WaitGroup
+	for range 5 {
+		producers.Add(1)
+		go func() {
+			defer producers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = w.WriteReport(t.Context(), report)
+				}
+			}
+		}()
+	}
+
+	closeCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	closeErr := make(chan error, 1)
+	go func() {
+		closeErr <- w.Close(closeCtx)
+	}()
+
+	select {
+	case err := <-closeErr:
+		if err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return in time (deadlock)")
+	}
+
+	close(stop)
+	producers.Wait()
 }
