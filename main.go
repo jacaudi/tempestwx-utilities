@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
 	"time"
 
 	"tempestwx-utilities/internal/config"
@@ -36,7 +35,10 @@ func main() {
 	// Configure Prometheus writer (UDP mode only)
 	token := os.Getenv("TOKEN")
 	if token == "" {
-		enablePushgateway, _ := strconv.ParseBool(os.Getenv("ENABLE_PROMETHEUS_PUSHGATEWAY"))
+		enablePushgateway, err := config.ParseBoolEnv("ENABLE_PROMETHEUS_PUSHGATEWAY")
+		if err != nil {
+			log.Fatal(err) //nolint:gocritic // log.Fatal skipping the deferred sink Close is addressed by the graceful-shutdown rework in Tasks 0.7/0.8
+		}
 		if enablePushgateway {
 			pushURL := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
 			if pushURL == "" {
@@ -51,7 +53,10 @@ func main() {
 		}
 
 		// Configure Prometheus metrics server (scrape endpoint)
-		enableMetrics, _ := strconv.ParseBool(os.Getenv("ENABLE_PROMETHEUS_METRICS"))
+		enableMetrics, err := config.ParseBoolEnv("ENABLE_PROMETHEUS_METRICS")
+		if err != nil {
+			log.Fatal(err)
+		}
 		if enableMetrics {
 			port := os.Getenv("PROMETHEUS_METRICS_PORT")
 			if port == "" {
@@ -66,7 +71,10 @@ func main() {
 	}
 
 	// Configure Postgres writer (both modes)
-	enablePostgres, _ := strconv.ParseBool(os.Getenv("ENABLE_POSTGRES"))
+	enablePostgres, err := config.ParseBoolEnv("ENABLE_POSTGRES")
+	if err != nil {
+		log.Fatal(err)
+	}
 	if enablePostgres {
 		dbConfig, err := config.GetDatabaseConfig()
 		if err != nil {
@@ -96,7 +104,10 @@ func main() {
 }
 
 func listenAndPushWithSink(ctx context.Context, metricsSink *sink.MetricsSink) {
-	logUDP, _ := strconv.ParseBool(os.Getenv("LOG_UDP"))
+	logUDP, err := config.ParseBoolEnv("LOG_UDP")
+	if err != nil {
+		log.Fatal(err)
+	}
 	log.Printf("starting UDP listener mode")
 
 	if err := listen(ctx, func(b []byte, addr *net.UDPAddr) error {
@@ -184,7 +195,10 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 		}
 	}
 
-	keepFiles, _ := strconv.ParseBool(os.Getenv("KEEP_EXPORT_FILES"))
+	keepFiles, err := config.ParseBoolEnv("KEEP_EXPORT_FILES")
+	if err != nil {
+		log.Fatal(err)
+	}
 	fileNum := 1
 
 	var next time.Time
