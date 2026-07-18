@@ -1,0 +1,77 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strconv"
+	"time"
+)
+
+const driverName = "sqlite" // modernc.org/sqlite registers this name
+
+// Config carries the tunable knobs for the SQLite store, loaded from
+// environment variables (see LoadConfig). BatchSize and FlushInterval are
+// consumed by the writer (Task 3.3); Open itself only needs BusyTimeout.
+type Config struct {
+	BatchSize     int
+	FlushInterval time.Duration
+	BusyTimeout   time.Duration
+}
+
+// LoadConfig reads SQLITE_BATCH_SIZE, SQLITE_FLUSH_INTERVAL, and
+// SQLITE_BUSY_TIMEOUT via getenv, falling back to defaults (100, 10s, 5000ms)
+// when a value is unset, unparseable, or non-positive. getenv is injected so
+// callers can test without touching the real process environment.
+func LoadConfig(getenv func(string) string) Config {
+	atoiOr := func(s string, def int) int {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+		return def
+	}
+	msOr := func(s string, def time.Duration) time.Duration {
+		if ms, err := strconv.Atoi(s); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+		return def
+	}
+	durOr := func(s string, def time.Duration) time.Duration {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			return d
+		}
+		return def
+	}
+	return Config{
+		BatchSize:     atoiOr(getenv("SQLITE_BATCH_SIZE"), 100),
+		FlushInterval: durOr(getenv("SQLITE_FLUSH_INTERVAL"), 10*time.Second),
+		BusyTimeout:   msOr(getenv("SQLITE_BUSY_TIMEOUT"), 5000*time.Millisecond),
+	}
+}
+
+// Open establishes a connection to the SQLite database at path with the
+// exact PRAGMAs required by design §10: WAL journaling, a busy timeout,
+// synchronous=NORMAL, and foreign key enforcement. It deliberately does NOT
+// set wal_autocheckpoint — Litestream owns checkpointing, and overriding it
+// here would silently break replication (design §10's top risk). Open pings
+// the connection and applies any pending schema migrations before returning.
+func Open(ctx context.Context, path string, cfg Config) (*sql.DB, error) {
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(%d)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)",
+		path, cfg.BusyTimeout.Milliseconds(),
+	)
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1) // single writer — serializes writes, avoids SQLITE_BUSY (design §10)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
