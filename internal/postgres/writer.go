@@ -860,8 +860,10 @@ func isRetryable(err error) bool {
 	return true
 }
 
-// Close implements MetricsWriter interface
-func (w *PostgresWriter) Close() error {
+// Close implements MetricsWriter interface. The channel-drain/pool-teardown
+// sequence below is unchanged for this task — see Task 0.8/0.9a for the
+// drain rework and idempotency gate.
+func (w *PostgresWriter) Close(ctx context.Context) error {
 	// Close channels to stop workers
 	close(w.obsBatch)
 	close(w.windBatch)

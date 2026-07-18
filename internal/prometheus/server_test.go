@@ -24,7 +24,7 @@ func TestMetricsServer_StartAndClose(t *testing.T) {
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)
 
-	if err := server.Close(); err != nil {
+	if err := server.Close(t.Context()); err != nil {
 		t.Fatalf("failed to close server: %v", err)
 	}
 }
@@ -79,7 +79,7 @@ func TestMetricsServer_MetricsEndpoint(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
-	defer func() { _ = server.Close() }()
+	defer func() { _ = server.Close(t.Context()) }()
 
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)
@@ -116,7 +116,7 @@ func TestMetricsServer_HealthEndpoint(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
-	defer func() { _ = server.Close() }()
+	defer func() { _ = server.Close(t.Context()) }()
 
 	// Give server time to start
 	time.Sleep(50 * time.Millisecond)

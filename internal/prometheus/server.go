@@ -92,12 +92,14 @@ func (s *MetricsServer) Flush(ctx context.Context) error {
 	return nil
 }
 
-// Close shuts down the HTTP server gracefully.
-func (s *MetricsServer) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// Close shuts down the HTTP server gracefully. The passed-in ctx is accepted
+// for MetricsWriter conformance and currently unused — the shutdown still
+// builds its own bounded 5s context internally; see Task 0.9b/0.10.
+func (s *MetricsServer) Close(ctx context.Context) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := s.server.Shutdown(ctx); err != nil {
+	if err := s.server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("metrics: shutdown error: %v", err)
 		return err
 	}

@@ -35,7 +35,7 @@ func TestPrometheusWriter_WriteReport(t *testing.T) {
 func TestPrometheusWriter_Close(t *testing.T) {
 	writer := NewPrometheusWriter("http://localhost:9091", "test-job")
 
-	err := writer.Close()
+	err := writer.Close(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

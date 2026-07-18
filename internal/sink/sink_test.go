@@ -3,6 +3,7 @@ package sink
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -17,8 +18,10 @@ type mockWriter struct {
 	metricCalls int
 	reportErr   error
 	metricsErr  error
+	panicMsg    string // non-empty triggers a panic from WriteReport
 	flushCalled bool
 	closeCalled bool
+	closeCtx    context.Context
 	mu          sync.Mutex
 }
 
@@ -26,6 +29,9 @@ func (m *mockWriter) WriteReport(ctx context.Context, report tempestudp.Report) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reportCalls++
+	if m.panicMsg != "" {
+		panic(m.panicMsg)
+	}
 	return m.reportErr
 }
 
@@ -43,16 +49,16 @@ func (m *mockWriter) Flush(ctx context.Context) error {
 	return nil
 }
 
-func (m *mockWriter) Close() error {
+func (m *mockWriter) Close(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closeCalled = true
+	m.closeCtx = ctx
 	return nil
 }
 
 func TestMetricsSink_AddWriter(t *testing.T) {
-	ctx := context.Background()
-	sink := NewMetricsSink(ctx)
+	sink := NewMetricsSink()
 
 	if sink.WriterCount() != 0 {
 		t.Errorf("expected 0 writers, got %d", sink.WriterCount())
@@ -68,7 +74,7 @@ func TestMetricsSink_AddWriter(t *testing.T) {
 
 func TestMetricsSink_SendReport(t *testing.T) {
 	ctx := context.Background()
-	sink := NewMetricsSink(ctx)
+	sink := NewMetricsSink()
 
 	writer1 := &mockWriter{}
 	writer2 := &mockWriter{}
@@ -97,7 +103,7 @@ func TestMetricsSink_SendReport(t *testing.T) {
 
 func TestMetricsSink_SendMetrics(t *testing.T) {
 	ctx := context.Background()
-	sink := NewMetricsSink(ctx)
+	sink := NewMetricsSink()
 
 	writer := &mockWriter{}
 	sink.AddWriter(writer)
@@ -115,7 +121,7 @@ func TestMetricsSink_SendMetrics(t *testing.T) {
 
 func TestMetricsSink_WriterError(t *testing.T) {
 	ctx := context.Background()
-	sink := NewMetricsSink(ctx)
+	sink := NewMetricsSink()
 
 	// Writer that returns error
 	failWriter := &mockWriter{reportErr: errors.New("write failed")}
@@ -128,10 +134,11 @@ func TestMetricsSink_WriterError(t *testing.T) {
 		SerialNumber: "TEST-001",
 	}
 
-	// Should not return error - errors are logged but don't fail the send
+	// A failing writer's error is now aggregated and returned (A-LOW: no more
+	// dead nil returns that silently swallow writer errors).
 	err := sink.SendReport(ctx, report)
-	if err != nil {
-		t.Errorf("expected no error when writer fails, got %v", err)
+	if err == nil {
+		t.Error("expected aggregated error when a writer fails, got nil")
 	}
 
 	// Both writers should have been called
@@ -145,14 +152,14 @@ func TestMetricsSink_WriterError(t *testing.T) {
 
 func TestMetricsSink_Close(t *testing.T) {
 	ctx := context.Background()
-	sink := NewMetricsSink(ctx)
+	sink := NewMetricsSink()
 
 	writer1 := &mockWriter{}
 	writer2 := &mockWriter{}
 	sink.AddWriter(writer1)
 	sink.AddWriter(writer2)
 
-	err := sink.Close()
+	err := sink.Close(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,5 +176,102 @@ func TestMetricsSink_Close(t *testing.T) {
 	}
 	if !writer2.closeCalled {
 		t.Error("writer2.Close should have been called")
+	}
+}
+
+// TestSink_RecoversPanickingWriter verifies a panicking writer cannot crash
+// the sink or block delivery to sibling writers (A-MEDIUM: panic recovery).
+func TestSink_RecoversPanickingWriter(t *testing.T) {
+	ctx := context.Background()
+	s := NewMetricsSink()
+
+	panicker := &mockWriter{panicMsg: "boom"}
+	healthy := &mockWriter{}
+	s.AddWriter(panicker)
+	s.AddWriter(healthy)
+
+	report := &tempestudp.TempestObservationReport{SerialNumber: "TEST-001"}
+
+	err := s.SendReport(ctx, report)
+	if err == nil {
+		t.Fatal("expected a non-nil error naming the recovered panic")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("expected error to mention the panic value, got: %v", err)
+	}
+
+	// The panicking writer was still invoked, and the sibling writer must
+	// still have been called despite the panic.
+	if panicker.reportCalls != 1 {
+		t.Errorf("panicker: expected 1 call, got %d", panicker.reportCalls)
+	}
+	if healthy.reportCalls != 1 {
+		t.Errorf("healthy writer: expected 1 call, got %d", healthy.reportCalls)
+	}
+}
+
+// TestSink_SendReportAggregatesErrors verifies SendReport joins per-writer
+// errors instead of silently discarding them (A-LOW: no dead nil returns).
+func TestSink_SendReportAggregatesErrors(t *testing.T) {
+	ctx := context.Background()
+	report := &tempestudp.TempestObservationReport{SerialNumber: "TEST-001"}
+
+	t.Run("two failing writers aggregate", func(t *testing.T) {
+		s := NewMetricsSink()
+		s.AddWriter(&mockWriter{reportErr: errors.New("writer1 failed")})
+		s.AddWriter(&mockWriter{reportErr: errors.New("writer2 failed")})
+
+		err := s.SendReport(ctx, report)
+		if err == nil {
+			t.Fatal("expected non-nil aggregated error")
+		}
+		if !strings.Contains(err.Error(), "writer1 failed") || !strings.Contains(err.Error(), "writer2 failed") {
+			t.Errorf("expected both writer errors present, got: %v", err)
+		}
+	})
+
+	t.Run("one failing one ok names the failure", func(t *testing.T) {
+		s := NewMetricsSink()
+		s.AddWriter(&mockWriter{reportErr: errors.New("writer1 failed")})
+		s.AddWriter(&mockWriter{})
+
+		err := s.SendReport(ctx, report)
+		if err == nil {
+			t.Fatal("expected non-nil error naming the failing writer")
+		}
+		if !strings.Contains(err.Error(), "writer1 failed") {
+			t.Errorf("expected failure to be named, got: %v", err)
+		}
+	})
+
+	t.Run("all ok returns nil", func(t *testing.T) {
+		s := NewMetricsSink()
+		s.AddWriter(&mockWriter{})
+		s.AddWriter(&mockWriter{})
+
+		if err := s.SendReport(ctx, report); err != nil {
+			t.Errorf("expected nil error when all writers succeed, got: %v", err)
+		}
+	})
+}
+
+// TestSink_ClosePassesContext verifies Close(ctx) forwards the caller's
+// cleanup context to each writer rather than a stored/cancelled one.
+func TestSink_ClosePassesContext(t *testing.T) {
+	s := NewMetricsSink()
+	writer := &mockWriter{}
+	s.AddWriter(writer)
+
+	// context.WithCancel yields a context distinct from context.Background(),
+	// so identity comparison below actually proves the parameter was forwarded.
+	cleanupCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := s.Close(cleanupCtx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if writer.closeCtx != cleanupCtx {
+		t.Error("expected Close to receive the caller-supplied cleanup context")
 	}
 }

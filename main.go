@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -29,20 +30,26 @@ func main() {
 	defer done()
 
 	// Initialize sink for both modes
-	metricsSink := sink.NewMetricsSink(ctx)
-	defer metricsSink.Close() //nolint:errcheck // Close signature/error handling revisited in Task 0.7 (sink Close(ctx) + error aggregation)
+	metricsSink := sink.NewMetricsSink()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := metricsSink.Close(cleanupCtx); err != nil {
+			slog.Error("sink close", "err", err)
+		}
+	}()
 
 	// Configure Prometheus writer (UDP mode only)
 	token := os.Getenv("TOKEN")
 	if token == "" {
 		enablePushgateway, err := config.ParseBoolEnv("ENABLE_PROMETHEUS_PUSHGATEWAY")
 		if err != nil {
-			log.Fatal(err) //nolint:gocritic // log.Fatal skipping the deferred sink Close is addressed by the graceful-shutdown rework in Tasks 0.7/0.8
+			log.Fatal(err) //nolint:gocritic // log.Fatal skipping the deferred sink Close is addressed by the graceful-shutdown rework in Task 0.8
 		}
 		if enablePushgateway {
 			pushURL := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
 			if pushURL == "" {
-				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true") //nolint:gocritic // log.Fatal skipping the deferred sink Close is addressed by the graceful-shutdown rework in Tasks 0.7/0.8
+				log.Fatal("PROMETHEUS_PUSHGATEWAY_URL is required when ENABLE_PROMETHEUS_PUSHGATEWAY is true") //nolint:gocritic // log.Fatal skipping the deferred sink Close is addressed by the graceful-shutdown rework in Task 0.8
 			}
 			jobName := os.Getenv("JOB_NAME")
 			if jobName == "" {

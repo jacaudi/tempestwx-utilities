@@ -86,8 +86,9 @@ func (w *PrometheusWriter) Flush(ctx context.Context) error {
 	return nil
 }
 
-// Close stops the push worker.
-func (w *PrometheusWriter) Close() error {
+// Close stops the push worker. ctx is accepted for MetricsWriter conformance
+// and is currently unused — see Task 0.9b for the idempotency gate.
+func (w *PrometheusWriter) Close(ctx context.Context) error {
 	close(w.outbox)
 	close(w.more)
 	w.wg.Wait() // Wait for pushWorker to finish
