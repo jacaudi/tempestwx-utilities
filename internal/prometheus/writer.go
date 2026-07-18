@@ -3,7 +3,9 @@ package prometheus
 import (
 	"context"
 	"log"
+	"net/http"
 	"sync"
+	"time"
 
 	"tempestwx-utilities/internal/tempestudp"
 
@@ -11,6 +13,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/push"
 	"github.com/prometheus/common/expfmt"
 )
+
+// pushTimeout bounds every pusher.Add() call (periodic pushes and the
+// final-flush push in pushWorker) so a dead/slow push gateway can never
+// stall shutdown. Add() uses context.Background() internally, so without
+// this the pusher's HTTP client would otherwise have no deadline at all.
+const pushTimeout = 10 * time.Second
 
 // PrometheusWriter wraps the existing Prometheus push logic.
 type PrometheusWriter struct {
@@ -39,7 +47,8 @@ func NewPrometheusWriter(pushURL, jobName string) *PrometheusWriter {
 	// Create pusher
 	pusher := push.New(pushURL, jobName).
 		Collector(collector).
-		Format(expfmt.NewFormat(expfmt.TypeTextPlain))
+		Format(expfmt.NewFormat(expfmt.TypeTextPlain)).
+		Client(&http.Client{Timeout: pushTimeout})
 
 	w := &PrometheusWriter{
 		pusher: pusher,

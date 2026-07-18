@@ -71,6 +71,34 @@ func TestPrometheusClose_Idempotent(t *testing.T) {
 	}
 }
 
+// TestPrometheusWriter_ClosePushTimeoutBounded verifies the pusher's HTTP
+// client carries a bounded Timeout, so a push gateway that accepts the
+// connection but never responds cannot stall the final-flush Add() (and
+// therefore Close) indefinitely. Add() uses context.Background() internally
+// (see github.com/prometheus/client_golang/prometheus/push), so without a
+// client-level Timeout this hangs until the test's own outer deadline — the
+// 0.9b review finding.
+func TestPrometheusWriter_ClosePushTimeoutBounded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // hang until the client gives up waiting
+	}))
+	t.Cleanup(server.Close)
+
+	writer := NewPrometheusWriter(server.URL, "test-job")
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- writer.Close(t.Context()) }()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Errorf("Close: unexpected error: %v", err)
+		}
+	case <-time.After(pushTimeout + 5*time.Second):
+		t.Fatal("Close did not return within the bounded push timeout")
+	}
+}
+
 // TestPrometheusWriteDuringClose_NoPanic drives concurrent WriteMetrics
 // producers against a Close in progress. Before the done-gate, this panics
 // with a send-on-closed-channel from either the outbox send or the more
