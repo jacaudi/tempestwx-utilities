@@ -2,8 +2,10 @@ package prometheus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -48,10 +50,12 @@ func NewMetricsServer(port string) *MetricsServer {
 
 	addr := ":" + port
 	server := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Addr:              addr,
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	return &MetricsServer{
@@ -62,13 +66,20 @@ func NewMetricsServer(port string) *MetricsServer {
 	}
 }
 
-// Start begins serving the metrics endpoint in a background goroutine.
+// Start binds the metrics listener synchronously, returning any bind error
+// (e.g. port already in use) to the caller, then serves the endpoint in a
+// background goroutine.
 func (s *MetricsServer) Start() error {
+	ln, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		return fmt.Errorf("metrics: listen on %s: %w", s.server.Addr, err)
+	}
+
 	s.shutdownWg.Add(1)
 	go func() {
 		defer s.shutdownWg.Done()
 		log.Printf("metrics: starting HTTP server on port %s", s.port)
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("metrics: server error: %v", err)
 		}
 	}()

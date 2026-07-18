@@ -3,7 +3,9 @@ package prometheus
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,37 @@ func TestMetricsServer_StartAndClose(t *testing.T) {
 
 	if err := server.Close(t.Context()); err != nil {
 		t.Fatalf("failed to close server: %v", err)
+	}
+}
+
+func TestMetricsServer_StartReturnsBindError(t *testing.T) {
+	// Discover a free port by binding to :0 with a plain listener, then
+	// release it immediately. Closing a listener that never accepted a
+	// connection releases the port with no lingering state, so it's safe
+	// to reuse straight away.
+	probe, err := net.Listen("tcp", ":0") //nolint:gosec // test-only: binds an ephemeral port on localhost to discover a free port number, not a production listener
+	if err != nil {
+		t.Fatalf("failed to discover a free port: %v", err)
+	}
+	port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+	if err := probe.Close(); err != nil {
+		t.Fatalf("failed to release probe listener: %v", err)
+	}
+
+	server1 := NewMetricsServer(port)
+	if err := server1.Start(); err != nil {
+		t.Fatalf("first server failed to bind %s: %v", port, err)
+	}
+	defer func() { _ = server1.Close(t.Context()) }()
+
+	// server1 is still holding the port, so a second server bound to the
+	// same port must fail synchronously.
+	server2 := NewMetricsServer(port)
+	err = server2.Start()
+	defer func() { _ = server2.Close(t.Context()) }()
+
+	if err == nil {
+		t.Fatal("expected second Start() on the same port to return a bind error, got nil")
 	}
 }
 
