@@ -109,6 +109,7 @@ The application switches modes based on presence of `TOKEN` environment variable
 - `SQLITE_FLUSH_INTERVAL`: SQLite batch flush interval (default: 10s)
 - `SQLITE_BUSY_TIMEOUT`: SQLite `busy_timeout` in milliseconds (default: 5000)
 - `LOG_UDP`: Optional. Set to "true" or "1" to log all UDP broadcasts received (default: false)
+- `TEMPEST_SERIAL`: Optional. Sets the OTel resource attribute `tempest.serial` (process-level station identity); the authoritative per-metric `serial` label comes from the UDP reports themselves
 - `TOKEN`: Optional. When set, switches to API export mode for historical data
 
 **Note:** In UDP mode, **SQLite is the default store**. If you set none of `ENABLE_PROMETHEUS_PUSHGATEWAY`, `ENABLE_PROMETHEUS_METRICS`, or `ENABLE_POSTGRES`, observations are still persisted to SQLite at `SQLITE_PATH` (default `/data/tempest.db`). SQLite is written only in UDP mode, and is disabled only when `ENABLE_POSTGRES` is the sole configured store **and** `SQLITE_PATH` is unset. See **SQLite Storage (default store)** below.

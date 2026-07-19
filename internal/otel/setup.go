@@ -50,16 +50,24 @@ type Config struct {
 }
 
 // newResource builds the Resource identifying this process: service.name,
-// service.version, and the station's tempest.serial.
+// service.version, host.name, and the station's tempest.serial.
+//
+// resource.WithHost() adds host.name via a Detector (os.Hostname()), which
+// can return an error wrapping resource.ErrPartialResource on the rare
+// system where the hostname lookup fails — per resource.New's documented
+// contract, that error still carries a usable (partial) Resource, so it is
+// tolerated here rather than treated as fatal; any other error still fails
+// Setup, matching the pre-existing behavior.
 func newResource(ctx context.Context, cfg Config) (*resource.Resource, error) {
 	res, err := resource.New(ctx,
+		resource.WithHost(),
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
 			semconv.ServiceVersion(cfg.ServiceVersion),
 			attribute.String("tempest.serial", cfg.Serial),
 		),
 	)
-	if err != nil {
+	if err != nil && !errors.Is(err, resource.ErrPartialResource) {
 		return nil, fmt.Errorf("build otel resource: %w", err)
 	}
 	return res, nil

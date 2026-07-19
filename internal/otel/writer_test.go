@@ -2,6 +2,7 @@ package otel
 
 import (
 	"math"
+	"sync"
 	"testing"
 
 	"tempestwx-utilities/internal/tempestudp"
@@ -53,6 +54,28 @@ func sumPointFor(t *testing.T, m metricdata.Metrics, serial string) (metricdata.
 		t.Fatalf("%s: data is %T, want metricdata.Sum[float64]", m.Name, m.Data)
 	}
 	return dataPointFor(s.DataPoints, serial)
+}
+
+// dataPointForInt64 is dataPointFor's int64 counterpart, for
+// ObservableCounter-backed instruments (reboots, bus_errors).
+func dataPointForInt64(points []metricdata.DataPoint[int64], serial string) (metricdata.DataPoint[int64], bool) {
+	for _, dp := range points {
+		if v, ok := dp.Attributes.Value("serial"); ok && v.AsString() == serial {
+			return dp, true
+		}
+	}
+	return metricdata.DataPoint[int64]{}, false
+}
+
+// sumPointForInt64 is sumPointFor's int64 counterpart, for the
+// ObservableCounter-backed reboots/bus_errors instruments.
+func sumPointForInt64(t *testing.T, m metricdata.Metrics, serial string) (metricdata.DataPoint[int64], bool) {
+	t.Helper()
+	s, ok := m.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("%s: data is %T, want metricdata.Sum[int64]", m.Name, m.Data)
+	}
+	return dataPointForInt64(s.DataPoints, serial)
 }
 
 func almostEqual(a, b float64) bool { return math.Abs(a-b) < 0.001 }
@@ -265,8 +288,6 @@ func TestWriter_RecordsInstruments(t *testing.T) {
 	}{
 		{"tempest.rainfall.mm", 0.2},
 		{"tempest.lightning.strike_count", 3},
-		{"tempest.reboots", 4},
-		{"tempest.bus_errors", 2},
 	}
 	for _, tc := range counterCases {
 		t.Run("counter/"+tc.instrument, func(t *testing.T) {
@@ -279,6 +300,33 @@ func TestWriter_RecordsInstruments(t *testing.T) {
 				t.Fatalf("instrument %q: no data point for serial=%q", tc.instrument, serial)
 			}
 			if !almostEqual(dp.Value, tc.want) {
+				t.Errorf("instrument %q value = %v, want %v", tc.instrument, dp.Value, tc.want)
+			}
+		})
+	}
+
+	// reboots/bus_errors are ObservableCounters reporting the latest
+	// device-lifetime absolute value (RadioStats[1]/[2], int64) — see C1's
+	// doc comment on Writer — so they're asserted separately from the
+	// float64 Sum instruments above.
+	observableCounterCases := []struct {
+		instrument string
+		want       int64
+	}{
+		{"tempest.reboots", 4},
+		{"tempest.bus_errors", 2},
+	}
+	for _, tc := range observableCounterCases {
+		t.Run("counter/"+tc.instrument, func(t *testing.T) {
+			m, ok := findMetric(rm, tc.instrument)
+			if !ok {
+				t.Fatalf("instrument %q not found in collected metrics", tc.instrument)
+			}
+			dp, ok := sumPointForInt64(t, m, serial)
+			if !ok {
+				t.Fatalf("instrument %q: no data point for serial=%q", tc.instrument, serial)
+			}
+			if dp.Value != tc.want {
 				t.Errorf("instrument %q value = %v, want %v", tc.instrument, dp.Value, tc.want)
 			}
 		})
@@ -321,4 +369,128 @@ func TestWriter_RecordsInstruments(t *testing.T) {
 			t.Errorf("tempest.heat_index.c: expected no data point for serial=%q (NaN temperature), but found one", nanTempSerial)
 		}
 	})
+}
+
+// collectObservableSum collects from reader and returns the int64 Sum data
+// point for instrument/serial (the reboots/bus_errors ObservableCounters),
+// failing the test if either is missing.
+func collectObservableSum(t *testing.T, reader *sdkmetric.ManualReader, instrument, serial string) metricdata.DataPoint[int64] {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("reader.Collect() returned unexpected error: %v", err)
+	}
+	m, ok := findMetric(rm, instrument)
+	if !ok {
+		t.Fatalf("instrument %q not found in collected metrics", instrument)
+	}
+	dp, ok := sumPointForInt64(t, m, serial)
+	if !ok {
+		t.Fatalf("instrument %q: no data point for serial=%q", instrument, serial)
+	}
+	return dp
+}
+
+// TestWriter_CumulativeCountersDoNotInflate is the RED test for C1:
+// reboots/bus_errors (RadioStats[1]/[2]) are device-lifetime ABSOLUTE
+// cumulative counts — the full lifetime value is reported on EVERY
+// hub_status broadcast (~1/min), not a per-interval delta (unlike rainfall
+// and lightning.strike_count, which genuinely are deltas and correctly use
+// Counter.Add — see handleObservationReport). Feeding the SAME absolute
+// value through WriteReport twice must NOT double the exported total: the
+// writer must record the latest absolute value per serial, not add it.
+func TestWriter_CumulativeCountersDoNotInflate(t *testing.T) {
+	ctx := t.Context()
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	w, err := NewWriter(mp)
+	if err != nil {
+		t.Fatalf("NewWriter() returned unexpected error: %v", err)
+	}
+
+	const serial = "REBOOT-TEST"
+	hub := &tempestudp.HubStatusReport{
+		SerialNumber: serial,
+		Uptime:       100,
+		Rssi:         -55,
+		RadioStats:   []float64{1, 4, 7},
+	}
+
+	// Feed the SAME hub_status broadcast twice, as the real device does once
+	// a minute between reboots.
+	if err := w.WriteReport(ctx, hub); err != nil {
+		t.Fatalf("WriteReport(hub, 1st) returned unexpected error: %v", err)
+	}
+	if err := w.WriteReport(ctx, hub); err != nil {
+		t.Fatalf("WriteReport(hub, 2nd) returned unexpected error: %v", err)
+	}
+
+	if dp := collectObservableSum(t, reader, "tempest.reboots", serial); dp.Value != 4 {
+		t.Errorf("tempest.reboots after 2 identical broadcasts = %v, want 4 (not 8 — must not inflate)", dp.Value)
+	}
+	if dp := collectObservableSum(t, reader, "tempest.bus_errors", serial); dp.Value != 7 {
+		t.Errorf("tempest.bus_errors after 2 identical broadcasts = %v, want 7 (not 14 — must not inflate)", dp.Value)
+	}
+
+	// A genuine change in the device's lifetime count (e.g. it actually
+	// rebooted again) must update the exported value to the new absolute
+	// value.
+	hub2 := &tempestudp.HubStatusReport{
+		SerialNumber: serial,
+		Uptime:       200,
+		Rssi:         -55,
+		RadioStats:   []float64{1, 5, 7},
+	}
+	if err := w.WriteReport(ctx, hub2); err != nil {
+		t.Fatalf("WriteReport(hub2) returned unexpected error: %v", err)
+	}
+	if dp := collectObservableSum(t, reader, "tempest.reboots", serial); dp.Value != 5 {
+		t.Errorf("tempest.reboots after reboot count changed to 5 = %v, want 5", dp.Value)
+	}
+}
+
+// TestWriter_CumulativeCounterStoreIsRaceSafe exercises the per-serial
+// reboots/bus_errors store under -race: the SDK's ObservableCounter callback
+// fires on the collection goroutine (triggered here by reader.Collect)
+// CONCURRENTLY with WriteReport updating the store from the UDP-listener
+// goroutine. An unsynchronized map would be flagged by -race; a mutex-backed
+// store passes cleanly.
+func TestWriter_CumulativeCounterStoreIsRaceSafe(t *testing.T) {
+	ctx := t.Context()
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	w, err := NewWriter(mp)
+	if err != nil {
+		t.Fatalf("NewWriter() returned unexpected error: %v", err)
+	}
+
+	const serial = "RACE-TEST"
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		for i := range 50 {
+			hub := &tempestudp.HubStatusReport{
+				SerialNumber: serial,
+				Uptime:       float64(i),
+				Rssi:         -55,
+				RadioStats:   []float64{1, float64(i), float64(i)},
+			}
+			if err := w.WriteReport(ctx, hub); err != nil {
+				t.Errorf("WriteReport() returned unexpected error: %v", err)
+			}
+		}
+	})
+	wg.Go(func() {
+		for range 50 {
+			var rm metricdata.ResourceMetrics
+			if err := reader.Collect(ctx, &rm); err != nil {
+				t.Errorf("reader.Collect() returned unexpected error: %v", err)
+			}
+		}
+	})
+	wg.Wait()
 }

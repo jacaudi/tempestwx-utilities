@@ -66,24 +66,17 @@ func TestWriter_WriteMetrics_TranslatesOldPrometheusMetrics(t *testing.T) {
 		}
 	}
 
-	counterCases := []struct {
-		instrument string
-		want       float64
-	}{
-		{"tempest.reboots", 7},
-		{"tempest.bus_errors", 5},
-	}
-	for _, tc := range counterCases {
-		m, ok := findMetric(rm, tc.instrument)
-		if !ok {
-			t.Fatalf("instrument %q not found in collected metrics", tc.instrument)
-		}
-		dp, ok := sumPointFor(t, m, serial)
-		if !ok {
-			t.Fatalf("instrument %q: no data point for serial=%q", tc.instrument, serial)
-		}
-		if !almostEqual(dp.Value, tc.want) {
-			t.Errorf("instrument %q value = %v, want %v", tc.instrument, dp.Value, tc.want)
+	// tempest.reboots and tempest.bus_errors are deliberately NOT asserted
+	// here: WriteMetrics no longer translates them (see writer.go's
+	// WriteMetrics — the case was removed as dead code, since API-export's
+	// client.go type switch only ever produces *TempestObservationReport,
+	// never *HubStatusReport, so this path never carries a reboots/bus_errors
+	// metric in practice). They are also now ObservableCounters (C1's fix
+	// for the cumulative-counter inflation bug), fed only via
+	// handleHubStatusReport, which WriteMetrics does not call.
+	for _, instrument := range []string{"tempest.reboots", "tempest.bus_errors"} {
+		if _, ok := findMetric(rm, instrument); ok {
+			t.Errorf("instrument %q: unexpectedly found in WriteMetrics output — reboots/bus_errors are no longer translated by this path", instrument)
 		}
 	}
 }

@@ -48,7 +48,8 @@ func TestSetup_ReturnsShutdown(t *testing.T) {
 }
 
 // TestResourceAttributes asserts the built Resource carries the required
-// identifying attributes: service.name, service.version, and tempest.serial.
+// identifying attributes: service.name, service.version, host.name, and
+// tempest.serial (Contract B's resource-attribute list).
 func TestResourceAttributes(t *testing.T) {
 	ctx := t.Context()
 
@@ -76,5 +77,10 @@ func TestResourceAttributes(t *testing.T) {
 	serial, ok := set.Value("tempest.serial")
 	if !ok || serial.AsString() != "ST-00012345" {
 		t.Errorf("tempest.serial = %v (ok=%v), want %q", serial, ok, "ST-00012345")
+	}
+
+	host, ok := set.Value(semconv.HostNameKey)
+	if !ok || host.AsString() == "" {
+		t.Errorf("host.name = %v (ok=%v), want a non-empty value", host, ok)
 	}
 }

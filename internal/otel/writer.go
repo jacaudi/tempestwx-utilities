@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 
 	"tempestwx-utilities/internal/tempest"
 	"tempestwx-utilities/internal/tempestudp"
@@ -76,8 +77,23 @@ type Writer struct {
 
 	rainfallMm           metric.Float64Counter
 	lightningStrikeCount metric.Float64Counter
-	reboots              metric.Float64Counter
-	busErrors            metric.Float64Counter
+
+	// reboots and busErrors are ObservableCounters, not synchronous
+	// Counters: RadioStats[1]/[2] are device-lifetime ABSOLUTE cumulative
+	// counts (the full lifetime value is reported on every hub_status
+	// broadcast, ~1/min) rather than per-interval deltas, so Counter.Add
+	// would inflate without bound. handleHubStatusReport records the
+	// latest absolute value per serial into rebootsBySerial /
+	// busErrorsBySerial (guarded by mu); the callbacks registered below
+	// observe that latest value once per collection cycle. mu also guards
+	// concurrent access from the SDK's collection goroutine (which invokes
+	// the callbacks) racing with WriteReport calls from the UDP-listener
+	// goroutine.
+	mu                sync.Mutex
+	rebootsBySerial   map[string]int64
+	busErrorsBySerial map[string]int64
+	reboots           metric.Int64ObservableCounter
+	busErrors         metric.Int64ObservableCounter
 }
 
 // NewWriter pre-registers every Contract B instrument on a Meter obtained
@@ -122,13 +138,49 @@ func NewWriter(mp metric.MeterProvider) (*Writer, error) {
 
 		rainfallMm:           newCounter(instRainfallMm),
 		lightningStrikeCount: newCounter(instLightningStrikeCount),
-		reboots:              newCounter(instReboots),
-		busErrors:            newCounter(instBusErrors),
+
+		rebootsBySerial:   make(map[string]int64),
+		busErrorsBySerial: make(map[string]int64),
 	}
+
+	var err error
+	w.reboots, err = meter.Int64ObservableCounter(instReboots,
+		metric.WithInt64Callback(w.observeReboots))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("create observable counter %s: %w", instReboots, err))
+	}
+	w.busErrors, err = meter.Int64ObservableCounter(instBusErrors,
+		metric.WithInt64Callback(w.observeBusErrors))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("create observable counter %s: %w", instBusErrors, err))
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
 	return w, nil
+}
+
+// observeReboots and observeBusErrors are the ObservableCounter callbacks
+// registered in NewWriter: once per collection cycle, they report the
+// latest absolute value recorded per serial (see the mu/rebootsBySerial doc
+// comment on Writer).
+func (w *Writer) observeReboots(_ context.Context, obs metric.Int64Observer) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for serial, v := range w.rebootsBySerial {
+		obs.Observe(v, metric.WithAttributes(serialAttrs(serial)...))
+	}
+	return nil
+}
+
+func (w *Writer) observeBusErrors(_ context.Context, obs metric.Int64Observer) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for serial, v := range w.busErrorsBySerial {
+		obs.Observe(v, metric.WithAttributes(serialAttrs(serial)...))
+	}
+	return nil
 }
 
 // serialAttrs builds the per-data-point attribute set: "serial" (the Tempest
@@ -229,10 +281,16 @@ func (w *Writer) handleHubStatusReport(ctx context.Context, r *tempestudp.HubSta
 
 	// radio_stats[1] and [2] (reboots, bus errors) are only present on a
 	// well-formed hub_status broadcast; a malformed/short array must not
-	// panic (mirrors the same guard in postgres/sqlite's writers).
+	// panic (mirrors the same guard in postgres/sqlite's writers). Both are
+	// device-lifetime ABSOLUTE cumulative counts, so the latest value is
+	// stored (overwriting any prior value for this serial), not added — see
+	// the mu/rebootsBySerial doc comment on Writer. int64(...) truncation is
+	// lossless here: RadioStats values are integer counts on the wire.
 	if len(r.RadioStats) >= 3 {
-		w.counter(ctx, w.reboots, r.RadioStats[1], r.SerialNumber)
-		w.counter(ctx, w.busErrors, r.RadioStats[2], r.SerialNumber)
+		w.mu.Lock()
+		w.rebootsBySerial[r.SerialNumber] = int64(r.RadioStats[1])
+		w.busErrorsBySerial[r.SerialNumber] = int64(r.RadioStats[2])
+		w.mu.Unlock()
 	}
 }
 
@@ -318,10 +376,12 @@ func (w *Writer) WriteMetrics(ctx context.Context, metrics []prometheus.Metric) 
 			w.gauge(ctx, w.uptimeSeconds, value, serial)
 		case tempest.Rssi:
 			w.gauge(ctx, w.rssiDbm, value, serial)
-		case tempest.Reboots:
-			w.counter(ctx, w.reboots, value, serial)
-		case tempest.BusErrors:
-			w.counter(ctx, w.busErrors, value, serial)
+			// tempest.Reboots and tempest.BusErrors have no case here:
+			// API-export (client.go's type switch) only ever produces
+			// *TempestObservationReport, never *HubStatusReport, so this path
+			// never carries a reboots/bus_errors metric to translate. Also,
+			// reboots/busErrors are now ObservableCounters (see handleHubStatusReport),
+			// which have no synchronous Add to call from here.
 		}
 	}
 	return nil
