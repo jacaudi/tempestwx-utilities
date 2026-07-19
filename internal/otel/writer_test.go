@@ -122,10 +122,17 @@ func TestWriter_RecordsInstruments(t *testing.T) {
 	}
 
 	// Second observation report, a different serial, engineered so
-	// WetBulbTemperatureC never converges (humidity=-500, physically
-	// impossible — see wetbulb_test.go's TestWetBulb_NonConvergentReturnsNaN
-	// for the same input) — asserts the NaN wetbulb is skipped rather than
-	// recorded.
+	// WetBulbTemperatureC never converges AND DewPointC's ln(RH/100) term
+	// goes NaN (humidity=-500, physically impossible — see
+	// wetbulb_test.go's TestWetBulb_NonConvergentReturnsNaN for the same
+	// input) — asserts both NaN gauges are skipped rather than recorded.
+	//
+	// HeatIndexC(25, -500) is verified (see below) to NOT go NaN for this
+	// particular input: at 25°C (77°F, below the 80°F Rothfusz threshold),
+	// HeatIndexC returns the air temperature unchanged without ever using
+	// the humidity term, per the NWS convention documented on HeatIndexC.
+	// A separate malformed report (NaN temperature, below) is used to
+	// genuinely exercise heat_index's NaN guard instead.
 	const nanSerial = "NAN-TEST"
 	nanObs := &tempestudp.TempestObservationReport{
 		SerialNumber: nanSerial,
@@ -135,6 +142,27 @@ func TestWriter_RecordsInstruments(t *testing.T) {
 	}
 	if err := w.WriteReport(ctx, nanObs); err != nil {
 		t.Fatalf("WriteReport(nan observation) returned unexpected error: %v", err)
+	}
+	if !math.IsNaN(tempestudp.DewPointC(25, -500)) {
+		t.Fatal("test invariant violated: DewPointC(25, -500) is expected to be NaN")
+	}
+	if math.IsNaN(tempestudp.HeatIndexC(25, -500)) {
+		t.Fatal("test invariant violated: HeatIndexC(25, -500) is expected to be non-NaN (below the 80°F threshold, air temp passthrough)")
+	}
+
+	// Third observation report, engineered so the air temperature itself is
+	// NaN — this propagates into DewPointC, HeatIndexC, and
+	// WetBulbTemperatureC alike, genuinely exercising heat_index's NaN
+	// guard (which the -500-humidity case above does not reach).
+	const nanTempSerial = "NAN-TEMP-TEST"
+	nanTempObs := &tempestudp.TempestObservationReport{
+		SerialNumber: nanTempSerial,
+		Obs: [][]float64{
+			{0, 1, 2, 3, 180, 60, 900, math.NaN(), 50, 100, 1, 50, 0.1},
+		},
+	}
+	if err := w.WriteReport(ctx, nanTempObs); err != nil {
+		t.Fatalf("WriteReport(nan temperature observation) returned unexpected error: %v", err)
 	}
 
 	var rm metricdata.ResourceMetrics
@@ -263,6 +291,34 @@ func TestWriter_RecordsInstruments(t *testing.T) {
 		}
 		if _, ok := gaugePointFor(t, m, nanSerial); ok {
 			t.Errorf("tempest.wetbulb.c: expected no data point for serial=%q (NaN wetbulb), but found one", nanSerial)
+		}
+	})
+
+	t.Run("dewpoint NaN input is skipped", func(t *testing.T) {
+		m, ok := findMetric(rm, "tempest.dewpoint.c")
+		if !ok {
+			t.Fatal("instrument tempest.dewpoint.c not found")
+		}
+		if _, ok := gaugePointFor(t, m, nanSerial); ok {
+			t.Errorf("tempest.dewpoint.c: expected no data point for serial=%q (NaN dewpoint, humidity=-500), but found one", nanSerial)
+		}
+	})
+
+	t.Run("dewpoint and heat_index NaN-temperature input is skipped", func(t *testing.T) {
+		dp, ok := findMetric(rm, "tempest.dewpoint.c")
+		if !ok {
+			t.Fatal("instrument tempest.dewpoint.c not found")
+		}
+		if _, ok := gaugePointFor(t, dp, nanTempSerial); ok {
+			t.Errorf("tempest.dewpoint.c: expected no data point for serial=%q (NaN temperature), but found one", nanTempSerial)
+		}
+
+		hi, ok := findMetric(rm, "tempest.heat_index.c")
+		if !ok {
+			t.Fatal("instrument tempest.heat_index.c not found")
+		}
+		if _, ok := gaugePointFor(t, hi, nanTempSerial); ok {
+			t.Errorf("tempest.heat_index.c: expected no data point for serial=%q (NaN temperature), but found one", nanTempSerial)
 		}
 	})
 }

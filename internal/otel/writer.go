@@ -182,8 +182,18 @@ func (w *Writer) handleObservationReport(ctx context.Context, r *tempestudp.Temp
 			w.gauge(ctx, w.wetBulbC, wetBulb, serial)
 		}
 
-		w.gauge(ctx, w.dewPointC, tempestudp.DewPointC(ob[7], ob[8]), serial)
-		w.gauge(ctx, w.heatIndexC, tempestudp.HeatIndexC(ob[7], ob[8]), serial)
+		// DewPointC and HeatIndexC can both go non-finite on malformed
+		// input (e.g. DewPointC's ln(RH/100) term for RH<=0, or either
+		// helper given a NaN/Inf temperature) — skip emitting rather than
+		// publishing NaN/Inf, mirroring the wetbulb guard above.
+		dewPoint := tempestudp.DewPointC(ob[7], ob[8])
+		if !isNonFinite(dewPoint) {
+			w.gauge(ctx, w.dewPointC, dewPoint, serial)
+		}
+		heatIndex := tempestudp.HeatIndexC(ob[7], ob[8])
+		if !isNonFinite(heatIndex) {
+			w.gauge(ctx, w.heatIndexC, heatIndex, serial)
+		}
 
 		w.gauge(ctx, w.humidityPercent, ob[8], serial)
 		w.gauge(ctx, w.illuminanceLux, ob[9], serial)
@@ -224,6 +234,13 @@ func (w *Writer) handleHubStatusReport(ctx context.Context, r *tempestudp.HubSta
 		w.counter(ctx, w.reboots, r.RadioStats[1], r.SerialNumber)
 		w.counter(ctx, w.busErrors, r.RadioStats[2], r.SerialNumber)
 	}
+}
+
+// isNonFinite reports whether v is NaN or +/-Inf — the guard condition for
+// skipping a gauge record rather than publishing a non-finite value to
+// Prometheus.
+func isNonFinite(v float64) bool {
+	return math.IsNaN(v) || math.IsInf(v, 0)
 }
 
 // gauge and counter are the small internal helpers that DRY "record a
