@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"tempestwx-utilities/internal/config"
+	"tempestwx-utilities/internal/otel"
 	"tempestwx-utilities/internal/postgres"
 	"tempestwx-utilities/internal/prometheus"
 	"tempestwx-utilities/internal/sink"
@@ -219,15 +220,13 @@ func listenAndPushWithSink(ctx context.Context, metricsSink *sink.MetricsSink) {
 			log.Printf("UDP in: %s", string(b))
 		}
 
-		report, err := tempestudp.ParseReport(b)
-		if err != nil {
-			log.Printf("error parsing report from %s: %s", addr, err)
-			return nil
-		}
-
-		// Send report to all configured writers
-		if err := metricsSink.SendReport(ctx, report); err != nil {
-			log.Printf("error sending report: %v", err)
+		// TracedIngest wraps parse + send-to-all-writers in a
+		// udp.receive -> report.parse -> sink.write span chain. A parse
+		// error is recorded on its span and skips the send entirely
+		// (preserving the prior log-and-continue behavior below); any
+		// error is logged, never fatal.
+		if err := otel.TracedIngest(ctx, b, tempestudp.ParseReport, metricsSink.SendReport); err != nil {
+			log.Printf("error processing report from %s: %v", addr, err)
 		}
 
 		return nil
@@ -327,9 +326,13 @@ func exportWithSink(ctx context.Context, token string, metricsSink *sink.Metrics
 			break
 		}
 
-		// Send to sink (Postgres)
+		// Send to sink (Postgres), wrapped in an export.batch span so
+		// each batch send shows up in the trace backend the same way
+		// UDP ingest's sink.write does.
 		log.Printf("sending %d metrics to sink", len(metrics)) //nolint:gosec // pre-existing: logs a count derived from tainted input, not raw content; deferred as follow-up hardening, not owned by a current task
-		if err := metricsSink.SendMetrics(ctx, metrics); err != nil {
+		if err := otel.TraceExportBatch(ctx, func(ctx context.Context) error {
+			return metricsSink.SendMetrics(ctx, metrics)
+		}); err != nil {
 			log.Printf("error sending metrics: %v", err)
 		}
 
