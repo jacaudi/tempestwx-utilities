@@ -30,6 +30,8 @@ type MetricsServer struct {
 
 // NewMetricsServer creates a new metrics server listening on the given port.
 func NewMetricsServer(port string) *MetricsServer {
+	warnDeprecated()
+
 	collector := &latestMetricsCollector{
 		metrics: make(map[string]prometheus.Metric),
 	}
