@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -26,7 +27,71 @@ import (
 
 	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
+	otelapi "go.opentelemetry.io/otel"
+	otellogglobal "go.opentelemetry.io/otel/log/global"
 )
+
+// version is the running binary's version, recorded as the OTel
+// service.version resource attribute (see otel.Config.ServiceVersion). No
+// -ldflags injection is wired yet — no present requirement asked for it — so
+// it stays the standard "dev" default until one does.
+var version = "dev"
+
+// teeHandler fans every slog.Record out to multiple handlers. It exists to
+// work around a real stdlib side effect: slog.SetDefault(l) calls
+// log.SetOutput(&handlerWriter{l.Handler(), ...}) whenever l.Handler() isn't
+// the unexported *defaultHandler type (see log/slog/logger.go's SetDefault
+// doc comment), which means installing the OTel log bridge as the sole slog
+// default would silently redirect ALL of main's existing log.Printf/log.Fatal
+// output away from stderr into the OTel pipeline only. Fanning out to a
+// plain stderr handler alongside the OTel one preserves that visibility.
+type teeHandler struct {
+	handlers []slog.Handler
+}
+
+// newTeeHandler returns a slog.Handler that forwards every record to each of
+// handlers.
+func newTeeHandler(handlers ...slog.Handler) *teeHandler {
+	return &teeHandler{handlers: handlers}
+}
+
+func (h *teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, sub := range h.handlers {
+		if sub.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
+	var errs []error
+	for _, sub := range h.handlers {
+		if !sub.Enabled(ctx, r.Level) {
+			continue
+		}
+		if err := sub.Handle(ctx, r.Clone()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make([]slog.Handler, len(h.handlers))
+	for i, sub := range h.handlers {
+		next[i] = sub.WithAttrs(attrs)
+	}
+	return &teeHandler{handlers: next}
+}
+
+func (h *teeHandler) WithGroup(name string) slog.Handler {
+	next := make([]slog.Handler, len(h.handlers))
+	for i, sub := range h.handlers {
+		next[i] = sub.WithGroup(name)
+	}
+	return &teeHandler{handlers: next}
+}
 
 // Old collector implementation removed - now using MetricsSink
 
@@ -96,6 +161,12 @@ func main() {
 	// same deferred cleanup, after metricsSink.Close returns, rather than via
 	// its own defer (which LIFO ordering would run BEFORE the sink drains).
 	var sqliteDB *sql.DB
+	// otelShutdown is set below (ENABLE_OTEL only) to the func Setup returns.
+	// It runs LAST in the deferred cleanup, after the sink has drained and
+	// sqlite has closed, so any buffered OTel data from those Close calls
+	// (traces/metrics/logs already emitted during the run) still has a chance
+	// to flush before the providers shut down.
+	var otelShutdown func(context.Context) error
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -105,6 +176,11 @@ func main() {
 		if sqliteDB != nil {
 			if err := sqliteDB.Close(); err != nil {
 				slog.Error("sqlite db close", "err", err)
+			}
+		}
+		if otelShutdown != nil {
+			if err := otelShutdown(cleanupCtx); err != nil {
+				slog.Error("otel shutdown", "err", err)
 			}
 		}
 	}()
@@ -185,6 +261,46 @@ func main() {
 			log.Fatalf("failed to initialize postgres: %v", err)
 		}
 		metricsSink.AddWriter(pgWriter)
+	}
+
+	// Configure OTel (both modes): Setup registers the meter/tracer/logger
+	// providers as OTel globals, the sink metrics writer is registered like
+	// any other writer, and slog's default logger is redirected to the OTel
+	// log bridge (Task 6.4) so internal/sink's slog calls flow to OTel too.
+	enableOTEL, err := config.ParseBoolEnv("ENABLE_OTEL")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if enableOTEL {
+		endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+		if endpoint == "" {
+			log.Fatal("OTEL_EXPORTER_OTLP_ENDPOINT is required when ENABLE_OTEL is true")
+		}
+		otelCfg := otel.Config{
+			Endpoint:       endpoint,
+			ServiceVersion: version,
+			Serial:         os.Getenv("TEMPEST_SERIAL"),
+		}
+		shutdown, err := otel.Setup(ctx, otelCfg)
+		if err != nil {
+			log.Fatalf("failed to initialize otel: %v", err)
+		}
+		otelShutdown = shutdown
+
+		otelWriter, err := otel.NewWriter(otelapi.GetMeterProvider())
+		if err != nil {
+			log.Fatalf("failed to create otel writer: %v", err)
+		}
+		metricsSink.AddWriter(otelWriter)
+
+		// slog.SetDefault redirects stdlib log's own default output (see
+		// teeHandler's doc comment) — so the default handler fans out to
+		// BOTH the OTel bridge and a plain stderr handler, preserving the
+		// existing log.Printf/log.Fatal container-log visibility instead of
+		// silently replacing it with OTel-only export.
+		otelHandler := otel.NewSlogHandler(otellogglobal.GetLoggerProvider())
+		stderrHandler := slog.NewTextHandler(os.Stderr, nil)
+		slog.SetDefault(slog.New(newTeeHandler(otelHandler, stderrHandler)))
 	}
 
 	// Require at least one writer (relaxed for gzip-only API-export mode; see requireWriters)
