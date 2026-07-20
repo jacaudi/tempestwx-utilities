@@ -151,7 +151,31 @@ func selectStore(enablePostgres bool, sqlitePathEnv string) storeChoice {
 	return c
 }
 
+// runHealthcheck implements the `tempestwx-utilities healthcheck` subcommand
+// used by the Docker HEALTHCHECK instruction: the chainguard/static final
+// image has no shell/curl/wget to run a conventional CMD probe, so the
+// binary probes itself instead. It GETs /healthz on the same HTTP_ADDR the
+// running server bound (default ":8080", matching srv.Addr below) and
+// returns 0 if that responds 200, 1 otherwise.
+func runHealthcheck() int {
+	addr := cmp.Or(os.Getenv("HTTP_ADDR"), ":8080")
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1" + addr + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck())
+	}
+
 	ctx, done := signalContext(context.Background(), signal.NotifyContext)
 	defer done()
 

@@ -17,6 +17,13 @@ docs/
 .superpowers/
 .claude/
 
+# UI build artifacts / deps -- the Dockerfile's "ui" stage rebuilds these
+# fresh from web/package.json + web/src, then overlays the result into the
+# builder stage; a stale local web/dist or web/node_modules must never leak
+# into the build context.
+**/node_modules
+web/dist
+
 # IDE
 .vscode/
 .idea/
