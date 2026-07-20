@@ -96,6 +96,72 @@ func TestRadarHandler_RejectsInvalidSite(t *testing.T) {
 	}
 }
 
+// TestRadarHandler_RejectsInvalidProduct proves a product value outside
+// Contract A's {N0B, N0Q} allowlist is rejected with 400 before the proxy is
+// ever called -- mirroring TestRadarHandler_RejectsInvalidSite's "not called"
+// assertion for the site allowlist. "BOGUS" is a well-formed query value
+// representative of any non-allowlisted product an attacker could supply.
+func TestRadarHandler_RejectsInvalidProduct(t *testing.T) {
+	called := false
+	fake := &fakeRadarProxy{getFunc: func(context.Context, string, string) (json.RawMessage, radar.Metadata, error) {
+		called = true
+		return nil, radar.Metadata{}, nil
+	}}
+
+	srv := New(testDepsWithRadar(fake))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/radar/TLX?product=BOGUS", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("GET /api/radar/TLX?product=BOGUS = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Error("proxy.Get was called for an invalid product -- the product allowlist guard must reject before proxying")
+	}
+	if want := `{"error":"invalid product"}` + "\n"; rec.Body.String() != want {
+		t.Errorf("body = %s, want %s", rec.Body.String(), want)
+	}
+}
+
+// TestRadarHandler_AcceptsValidProducts proves both Contract A product values
+// reach the proxy unchanged, and that an omitted ?product still defaults to
+// N0B end-to-end through the handler (TestRadarHandler_ServesGeoJSON only
+// exercises an explicit ?product=N0B).
+func TestRadarHandler_AcceptsValidProducts(t *testing.T) {
+	tests := []struct {
+		name        string
+		rawQuery    string
+		wantProduct string
+	}{
+		{"explicit N0Q", "?product=N0Q", "N0Q"},
+		{"omitted product defaults to N0B", "", "N0B"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotProduct string
+			fake := &fakeRadarProxy{getFunc: func(_ context.Context, _, product string) (json.RawMessage, radar.Metadata, error) {
+				gotProduct = product
+				return json.RawMessage(`{"type":"FeatureCollection","features":[]}`), radar.Metadata{}, nil
+			}}
+			srv := New(testDepsWithRadar(fake))
+
+			req := httptest.NewRequest(http.MethodGet, "/api/radar/TLX"+tt.rawQuery, nil)
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+			}
+			if gotProduct != tt.wantProduct {
+				t.Errorf("proxy.Get product = %q, want %q", gotProduct, tt.wantProduct)
+			}
+		})
+	}
+}
+
 // TestRadarHandler_ErrorMapping proves each Contract A sentinel maps to its
 // Contract C status + error code.
 func TestRadarHandler_ErrorMapping(t *testing.T) {

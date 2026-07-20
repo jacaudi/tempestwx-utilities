@@ -44,8 +44,12 @@ func registerRadar(mux *http.ServeMux, deps Deps) {
 }
 
 // handleRadar validates {site} against radar.IsValidSite's allowlist (the
-// SSRF guard -- must run before any proxy call), then serves the GeoJSON
-// body radarProxy.Get returns, mapping its Contract A sentinel errors to
+// SSRF guard -- must run before any proxy call) and ?product against
+// Contract A's {N0B, N0Q} allowlist (same must-run-before-any-proxy-call
+// rule -- an unvalidated product would forward to the proxy's S3 prefix
+// unchecked, and would break the proxy's literal "N0B" no_recent_scan
+// fallback check for any other spelling), then serves the GeoJSON body
+// radarProxy.Get returns, mapping its Contract A sentinel errors to
 // Contract C's status codes and short error codes.
 func handleRadar(w http.ResponseWriter, r *http.Request, radarProxy RadarProxy) {
 	site := r.PathValue("site")
@@ -55,6 +59,12 @@ func handleRadar(w http.ResponseWriter, r *http.Request, radarProxy RadarProxy) 
 	}
 
 	product := cmp.Or(r.URL.Query().Get("product"), defaultRadarProduct)
+	switch product {
+	case defaultRadarProduct, "N0Q":
+	default:
+		writeJSONError(w, http.StatusBadRequest, "invalid product")
+		return
+	}
 
 	ctx := r.Context()
 
