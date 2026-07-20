@@ -7,6 +7,11 @@ node_modules/
 dist/*
 !dist/.gitkeep
 
+# Operator-supplied basemap (see public/basemap/PROVENANCE.md) -- never
+# commit a locally-dropped .pmtiles binary; the directory stays tracked via
+# PROVENANCE.md.
+public/basemap/*.pmtiles
+
 # Vite / editor cruft
 dist-ssr/
 *.local

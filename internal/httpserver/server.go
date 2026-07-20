@@ -56,6 +56,14 @@ type Deps struct {
 	// fake or a *tempestapi.Client pointed at an httptest.Server.
 	WeatherFlow WeatherFlowProxy
 
+	// Radar backs GET /api/radar/{site} (Task 2.5). Left nil disables the
+	// route entirely (main.go sets it only when ENABLE_RADAR=true) -- see
+	// registerRadar's doc comment for why this differs from Observations/
+	// WeatherFlow's "register unconditionally, 503 on nil" pattern.
+	// Production wires *radar.Proxy (which satisfies RadarProxy); tests pass
+	// a fake.
+	Radar RadarProxy
+
 	// TracerProvider is the otelhttp middleware's span source (Task 1.6).
 	// Nil means "use the OTel global TracerProvider" -- otelhttp.WithTracerProvider
 	// already treats a nil provider as a no-op, falling back to
@@ -75,6 +83,7 @@ func New(deps Deps) *http.Server {
 	registerHealthz(mux)
 	registerObservations(mux, deps)
 	registerProxy(mux, deps)
+	registerRadar(mux, deps)
 	registerStatic(mux, deps)
 
 	handler := otelhttp.NewHandler(securityHeaders(mux), "http.server", otelhttp.WithTracerProvider(deps.TracerProvider))

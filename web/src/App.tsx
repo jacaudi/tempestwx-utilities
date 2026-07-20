@@ -13,6 +13,7 @@ import { LightningCard } from './components/LightningCard';
 import { ForecastStrip } from './components/ForecastStrip';
 import { StationHealth } from './components/StationHealth';
 import { AlmanacCard } from './components/AlmanacCard';
+import { RadarCard } from './components/RadarCard';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import type { ThemeName } from './types/weather';
@@ -81,6 +82,18 @@ function App() {
             {status && <StationHealth status={status} />}
             <ForecastStrip forecast={forecast} unit={prefs.temperatureUnit} />
             {almanac && <AlmanacCard almanac={almanac} unit={prefs.temperatureUnit} />}
+            {station && (
+              // Own ErrorBoundary (in addition to RadarCard's internal
+              // try/catch around MapLibre init) -- belt-and-suspenders so a
+              // WebGL/MapLibre failure can never blank the whole dashboard
+              // grid, which shares a single outer ErrorBoundary.
+              <ErrorBoundary>
+                {/* No client-side site table/nearest-site lookup yet
+                    (follow-up, belongs with the DOC.1 extract-sidecar work)
+                    -- RadarCard degrades to "not configured" until one exists. */}
+                <RadarCard station={station} />
+              </ErrorBoundary>
+            )}
           </div>
         </main>
       </ErrorBoundary>
