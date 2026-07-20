@@ -11,12 +11,14 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"tempestwx-utilities/internal/config"
+	"tempestwx-utilities/internal/httpserver"
 	"tempestwx-utilities/internal/otel"
 	"tempestwx-utilities/internal/postgres"
 	"tempestwx-utilities/internal/prometheus"
@@ -24,6 +26,7 @@ import (
 	"tempestwx-utilities/internal/sqlite"
 	"tempestwx-utilities/internal/tempestapi"
 	"tempestwx-utilities/internal/tempestudp"
+	"tempestwx-utilities/web"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
@@ -32,9 +35,10 @@ import (
 )
 
 // version is the running binary's version, recorded as the OTel
-// service.version resource attribute (see otel.Config.ServiceVersion). No
-// -ldflags injection is wired yet — no present requirement asked for it — so
-// it stays the standard "dev" default until one does.
+// service.version resource attribute (see otel.Config.ServiceVersion). It is
+// injected at build time via `-ldflags -X main.version=${VERSION}` (see the
+// Dockerfile and buildx bake config); it stays the "dev" default for
+// non-release/local builds that don't set VERSION.
 var version = "dev"
 
 // teeHandler fans every slog.Record out to multiple handlers. It exists to
@@ -148,7 +152,43 @@ func selectStore(enablePostgres bool, sqlitePathEnv string) storeChoice {
 	return c
 }
 
+// runHealthcheck implements the `tempestwx-utilities healthcheck` subcommand
+// used by the Docker HEALTHCHECK instruction: the chainguard/static final
+// image has no shell/curl/wget to run a conventional CMD probe, so the
+// binary probes itself instead. It GETs /healthz on the same HTTP_ADDR the
+// running server bound (default ":8080", matching srv.Addr below) and
+// returns 0 if that responds 200, 1 otherwise.
+func runHealthcheck() int {
+	addr := cmp.Or(os.Getenv("HTTP_ADDR"), ":8080")
+	// HTTP_ADDR may be either ":8080" (bind-all shorthand) or "0.0.0.0:8080"
+	// (explicit host:port) — net.SplitHostPort handles both, returning the
+	// port either way. The healthcheck always probes 127.0.0.1 regardless of
+	// the configured bind host, since it runs inside the same container as
+	// the server it's checking. If SplitHostPort fails to find a port
+	// separator at all (a malformed HTTP_ADDR with no ":"), fall back to
+	// treating addr as the port suffix, matching the pre-fix behavior.
+	port := addr
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		port = p
+	}
+	url := "http://" + net.JoinHostPort("127.0.0.1", port) + "/healthz"
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url) //nolint:gosec // G107: localhost self-healthcheck, addr from controlled HTTP_ADDR env, not external input
+	if err != nil {
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck())
+	}
+
 	ctx, done := signalContext(context.Background(), signal.NotifyContext)
 	defer done()
 
@@ -161,6 +201,15 @@ func main() {
 	// same deferred cleanup, after metricsSink.Close returns, rather than via
 	// its own defer (which LIFO ordering would run BEFORE the sink drains).
 	var sqliteDB *sql.DB
+	// sw is the *sqlite.Writer handle (UDP mode only, when the sqlite store is
+	// selected), captured here so it can also be wired into httpserver.Deps.Observations
+	// below -- the same writer instance both drains the metrics sink and backs
+	// the JSON API's read endpoints.
+	var sw *sqlite.Writer
+	// srv is the UI/JSON-API HTTP server (UDP mode only; see the mode-gated
+	// startup below). It must be shut down BEFORE metricsSink.Close so the API
+	// stops accepting reads before the writers it reads from start draining.
+	var srv *http.Server
 	// otelShutdown is set below (ENABLE_OTEL only) to the func Setup returns.
 	// It runs LAST in the deferred cleanup, after the sink has drained and
 	// sqlite has closed, so any buffered OTel data from those Close calls
@@ -170,6 +219,11 @@ func main() {
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		if srv != nil {
+			if err := srv.Shutdown(cleanupCtx); err != nil {
+				slog.Error("http server shutdown", "err", err)
+			}
+		}
 		if err := metricsSink.Close(cleanupCtx); err != nil {
 			slog.Error("sink close", "err", err)
 		}
@@ -243,7 +297,8 @@ func main() {
 				log.Fatalf("failed to open sqlite: %v", err)
 			}
 			sqliteDB = db
-			metricsSink.AddWriter(sqlite.NewWriter(ctx, db, sqliteCfg))
+			sw = sqlite.NewWriter(ctx, db, sqliteCfg)
+			metricsSink.AddWriter(sw)
 		}
 	}
 
@@ -314,6 +369,38 @@ func main() {
 	}
 	if err := requireWriters(mode, metricsSink.WriterCount(), keepFiles); err != nil {
 		log.Fatal(err)
+	}
+
+	// Start the UI/JSON-API HTTP server (UDP mode only): API-export mode is a
+	// batch job that runs to completion and exits (exportWithSink, below), so
+	// a long-running server has no place there. deps.Observations is left nil
+	// when sqlite is disabled (postgres-only edge case) -- assigning sw
+	// directly would wrap a nil *sqlite.Writer in a non-nil ObservationReader
+	// interface, defeating the handlers' nil guard, so it is only set when sw
+	// is actually non-nil.
+	//
+	// TOKEN-in-UDP-mode limitation (flagged, not fixed here): token is always
+	// empty in this branch (a non-empty TOKEN switches to ModeAPIExport
+	// above), so the WeatherFlow proxy (/api/forecast|almanac|station) has no
+	// credential to authenticate with and degrades to an upstream 401. Wiring
+	// a separate token source for UDP mode is a design decision for a
+	// follow-up task, not this one -- see the task report.
+	if mode == ModeUDP {
+		deps := httpserver.Deps{
+			StaticFS:    web.DistFS(),
+			WeatherFlow: tempestapi.NewClient(token),
+		}
+		if sw != nil {
+			deps.Observations = sw
+		}
+		srv = httpserver.New(deps)
+		srv.Addr = cmp.Or(os.Getenv("HTTP_ADDR"), ":8080")
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("http server", "err", err)
+			}
+		}()
+		slog.Info("http server listening", "addr", srv.Addr)
 	}
 
 	// Choose operational mode

@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -117,6 +122,82 @@ func TestTeeHandler_FansOutToAllHandlers(t *testing.T) {
 	}
 	if got := records[0].Body().AsString(); got != "tee test message" {
 		t.Errorf("OTel record Body() = %q, want %q", got, "tee test message")
+	}
+}
+
+// TestRunHealthcheck_HealthyServer asserts runHealthcheck's success path: a
+// real listening server answering 200 on /healthz yields exit code 0. Uses
+// httptest.NewServer (a real net.Listener + http.Server) rather than a mock,
+// per the docker HEALTHCHECK contract: the binary is exec'd as
+// `tempestwx-utilities healthcheck` inside the same container as the running
+// server, so it must actually dial the loopback address.
+func TestRunHealthcheck_HealthyServer(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse httptest URL: %v", err)
+	}
+	// runHealthcheck builds "http://127.0.0.1" + HTTP_ADDR + "/healthz", so
+	// HTTP_ADDR must be in the ":port" shape it uses in production (srv.Addr
+	// = cmp.Or(os.Getenv("HTTP_ADDR"), ":8080") in main), not "host:port".
+	t.Setenv("HTTP_ADDR", ":"+u.Port())
+
+	if got := runHealthcheck(); got != 0 {
+		t.Fatalf("runHealthcheck() = %d, want 0 for a healthy /healthz", got)
+	}
+}
+
+// TestRunHealthcheck_HostPortShape asserts runHealthcheck works when
+// HTTP_ADDR is set in "host:port" shape (e.g. "0.0.0.0:8080" or, as here,
+// "127.0.0.1:<port>"), not just the ":port" shape used elsewhere in this
+// file. runHealthcheck must always probe 127.0.0.1 regardless of the host
+// component in HTTP_ADDR, since the healthcheck runs inside the same
+// container as the server it's probing.
+func TestRunHealthcheck_HostPortShape(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse httptest URL: %v", err)
+	}
+	t.Setenv("HTTP_ADDR", "127.0.0.1:"+u.Port())
+
+	if got := runHealthcheck(); got != 0 {
+		t.Fatalf("runHealthcheck() = %d, want 0 for a healthy /healthz with host:port HTTP_ADDR", got)
+	}
+}
+
+// TestRunHealthcheck_Unreachable asserts the failure path: nothing listening
+// on the configured address yields a non-zero exit code. A listener is
+// opened and immediately closed to obtain a port number that is (briefly)
+// guaranteed free, rather than hardcoding a port that might be in use.
+func TestRunHealthcheck_Unreachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := ln.Addr().(*net.TCPAddr)
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close reserved listener: %v", err)
+	}
+
+	t.Setenv("HTTP_ADDR", ":"+strconv.Itoa(addr.Port))
+
+	if got := runHealthcheck(); got == 0 {
+		t.Fatalf("runHealthcheck() = 0, want non-zero when nothing is listening")
 	}
 }
 

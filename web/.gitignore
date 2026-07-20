@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output — keep the directory tracked (Go's go:embed needs a
+# non-empty dist/ to compile against) but ignore everything `npm run
+# build` produces into it.
+dist/*
+!dist/.gitkeep
+
+# Vite / editor cruft
+dist-ssr/
+*.local
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Logs
+logs
+*.log
+npm-debug.log*

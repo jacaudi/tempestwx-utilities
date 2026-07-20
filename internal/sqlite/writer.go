@@ -27,6 +27,16 @@ const (
 	// single writer to complete at least one batch flush; a discrete event is
 	// rare, so blocking briefly is correct, not silent loss.
 	eventBlockTimeout = 5 * time.Second
+
+	// maxHistoryPoints caps the rows HistoryPoints returns for an unbounded
+	// or wide [from, to] range. Without a cap, a request spanning the whole
+	// table would scan and marshal every row through the single writer
+	// connection (SetMaxOpenConns(1)), serializing behind and starving the
+	// writer goroutine. 10000 is generous headroom over any chart the UI
+	// currently renders (the /history endpoint has no UI consumer yet, so
+	// truncation risk today is low) while still bounding worst-case response
+	// size and query cost (SGE review I1).
+	maxHistoryPoints = 10000
 )
 
 // rowKind discriminates the payload carried by a rowEnvelope.
@@ -711,10 +721,15 @@ const selectLatestObservationSQL = `
 	LIMIT 1
 `
 
-// LatestObservation returns the newest tempest_observations row for serial
-// (ORDER BY timestamp DESC LIMIT 1). Returns ErrObservationNotFound,
-// checkable via errors.Is, when serial has no rows.
-func (w *Writer) LatestObservation(ctx context.Context, serial string) (Observation, error) {
+// scanObservation scans a single tempest_observations row (the exact column
+// list both selectLatestObservationSQL and selectLatestObservationAnySQL
+// select, in the same order) into an Observation, converting SQL NULL
+// columns to nil pointers. This is the one place that column-order <->
+// struct-field mapping lives: LatestObservation and LatestObservationAny
+// select the identical column list (one scoped by serial, one not), so if the
+// schema or column order ever changes, both callers must change together --
+// that shared knowledge is exactly what this extraction single-sources.
+func scanObservation(row *sql.Row) (Observation, error) {
 	var (
 		obs                                     Observation
 		windSampleInterval, precipType          sql.NullInt64
@@ -722,7 +737,6 @@ func (w *Writer) LatestObservation(ctx context.Context, serial string) (Observat
 		tempWetbulb, lightningDistance, battery sql.NullFloat64
 	)
 
-	row := w.db.QueryRowContext(ctx, selectLatestObservationSQL, serial)
 	err := row.Scan(
 		&obs.ID, &obs.SerialNumber, &obs.Timestamp,
 		&obs.WindLull, &obs.WindAvg, &obs.WindGust, &obs.WindDirection, &windSampleInterval,
@@ -731,11 +745,8 @@ func (w *Writer) LatestObservation(ctx context.Context, serial string) (Observat
 		&lightningDistance, &lightningStrikeCount,
 		&battery, &reportInterval,
 	)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return Observation{}, fmt.Errorf("%w: %s", ErrObservationNotFound, serial)
-	case err != nil:
-		return Observation{}, fmt.Errorf("query latest observation: %w", err)
+	if err != nil {
+		return Observation{}, err
 	}
 
 	if windSampleInterval.Valid {
@@ -760,6 +771,52 @@ func (w *Writer) LatestObservation(ctx context.Context, serial string) (Observat
 		obs.ReportInterval = &reportInterval.Int64
 	}
 
+	return obs, nil
+}
+
+// LatestObservation returns the newest tempest_observations row for serial
+// (ORDER BY timestamp DESC LIMIT 1). Returns ErrObservationNotFound,
+// checkable via errors.Is, when serial has no rows.
+func (w *Writer) LatestObservation(ctx context.Context, serial string) (Observation, error) {
+	row := w.db.QueryRowContext(ctx, selectLatestObservationSQL, serial)
+	obs, err := scanObservation(row)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Observation{}, fmt.Errorf("%w: %s", ErrObservationNotFound, serial)
+	case err != nil:
+		return Observation{}, fmt.Errorf("query latest observation: %w", err)
+	}
+	return obs, nil
+}
+
+const selectLatestObservationAnySQL = `
+	SELECT id, serial_number, timestamp,
+		wind_lull, wind_avg, wind_gust, wind_direction, wind_sample_interval,
+		pressure, temp_air, temp_wetbulb, humidity,
+		illuminance, uv_index, irradiance, rain_rate, precip_type,
+		lightning_distance, lightning_strike_count,
+		battery, report_interval
+	FROM tempest_observations
+	ORDER BY timestamp DESC
+	LIMIT 1
+`
+
+// LatestObservationAny returns the newest tempest_observations row across ALL
+// serials (identical to LatestObservation but without the WHERE
+// serial_number clause). GET /api/observations/current is a single-station
+// appliance endpoint with no serial to scope by, so "newest observation
+// overall" is the correct resolution -- see the httpserver package's
+// registerObservations for how the API handler uses this. Returns
+// ErrObservationNotFound, checkable via errors.Is, when the table is empty.
+func (w *Writer) LatestObservationAny(ctx context.Context) (Observation, error) {
+	row := w.db.QueryRowContext(ctx, selectLatestObservationAnySQL)
+	obs, err := scanObservation(row)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Observation{}, fmt.Errorf("%w: no observations in table", ErrObservationNotFound)
+	case err != nil:
+		return Observation{}, fmt.Errorf("query latest observation (any serial): %w", err)
+	}
 	return obs, nil
 }
 
@@ -796,8 +853,10 @@ type Point struct {
 }
 
 // HistoryPoints returns every tempest_observations sample for field with a
-// timestamp in [from, to], ordered by timestamp ascending. field must be a
-// key of historyFieldColumns; an unknown field (including anything
+// timestamp in [from, to], ordered by timestamp ascending, capped at
+// maxHistoryPoints (an unbounded or wide range is truncated rather than
+// returning the whole table -- SGE review I1). field must be a key of
+// historyFieldColumns; an unknown field (including anything
 // SQL-injection-shaped) is rejected before any query is built or executed.
 // Rows where the column is SQL NULL (e.g. temp_wetbulb before wet-bulb
 // convergence) are omitted rather than reported as a misleading 0.
@@ -808,8 +867,8 @@ func (w *Writer) HistoryPoints(ctx context.Context, field string, from, to int64
 	}
 
 	query := fmt.Sprintf( //nolint:gosec // column comes from historyFieldColumns' value, never the raw field argument
-		`SELECT timestamp, %s FROM tempest_observations WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp`,
-		column,
+		`SELECT timestamp, %s FROM tempest_observations WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp LIMIT %d`,
+		column, maxHistoryPoints,
 	)
 
 	rows, err := w.db.QueryContext(ctx, query, from, to)

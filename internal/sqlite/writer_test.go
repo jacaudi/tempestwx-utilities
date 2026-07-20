@@ -518,6 +518,49 @@ func TestReader_LatestObservation(t *testing.T) {
 	})
 }
 
+// TestReader_LatestObservationAny proves LatestObservationAny returns the
+// newest row across ALL serials (no WHERE serial_number clause) -- the
+// single-station appliance's /api/observations/current has no serial to
+// scope by, so it needs the newest row overall, not per-serial -- and the
+// same sentinel error as LatestObservation when the table is empty.
+func TestReader_LatestObservationAny(t *testing.T) {
+	t.Run("returns_newest_across_serials", func(t *testing.T) {
+		w := newTestWriter(t)
+		ctx := t.Context()
+
+		// Two different serials; the newest row overall belongs to the
+		// second serial, not the first -- proves no serial-scoping happens.
+		if err := w.WriteReport(ctx, obsReport("ST-A", 1700000100, 10)); err != nil {
+			t.Fatalf("WriteReport: %v", err)
+		}
+		if err := w.WriteReport(ctx, obsReport("ST-B", 1700000200, 20)); err != nil {
+			t.Fatalf("WriteReport: %v", err)
+		}
+		if err := w.Flush(ctx); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+
+		got, err := w.LatestObservationAny(ctx)
+		if err != nil {
+			t.Fatalf("LatestObservationAny: %v", err)
+		}
+		if got.SerialNumber != "ST-B" {
+			t.Errorf("SerialNumber = %q, want ST-B (the newest row overall)", got.SerialNumber)
+		}
+		if got.Timestamp != 1700000200 {
+			t.Errorf("Timestamp = %d, want 1700000200", got.Timestamp)
+		}
+	})
+
+	t.Run("no_rows_returns_sentinel", func(t *testing.T) {
+		w := newTestWriter(t)
+		_, err := w.LatestObservationAny(t.Context())
+		if !errors.Is(err, ErrObservationNotFound) {
+			t.Fatalf("err = %v, want ErrObservationNotFound", err)
+		}
+	})
+}
+
 // TestReader_HistoryPoints proves HistoryPoints returns in-range points
 // ordered by timestamp for an allowlisted field, and rejects an unknown or
 // SQL-injection-shaped field before any query executes.
@@ -587,6 +630,47 @@ func TestReader_HistoryPoints(t *testing.T) {
 		var count int
 		if err := w.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tempest_observations`).Scan(&count); err != nil {
 			t.Fatalf("tempest_observations unusable after rejected field: %v", err)
+		}
+	})
+
+	// caps_at_max_history_points proves an unbounded [from, to] range can't
+	// dump the whole table through the single writer connection (SGE review
+	// I1): rows beyond maxHistoryPoints are truncated rather than all
+	// returned. Rows are inserted directly via w.db (bypassing the async
+	// Writer channel/batching) so inserting maxHistoryPoints+1 rows is fast
+	// and can't be silently dropped by the channel's non-blocking enqueue.
+	t.Run("caps_at_max_history_points", func(t *testing.T) {
+		w := newTestWriter(t)
+		ctx := t.Context()
+
+		const total = maxHistoryPoints + 5
+
+		tx, err := w.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		stmt, err := tx.PrepareContext(ctx, `INSERT INTO tempest_observations (id, serial_number, timestamp, temp_air) VALUES (?, ?, ?, ?)`)
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		for i := range total {
+			if _, err := stmt.ExecContext(ctx, uuid.Must(uuid.NewV7()).String(), "ST-CAP", int64(1700000000+i), 20.0); err != nil {
+				t.Fatalf("insert row %d: %v", i, err)
+			}
+		}
+		if err := stmt.Close(); err != nil {
+			t.Fatalf("close stmt: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+
+		got, err := w.HistoryPoints(ctx, "temp_air", 0, 1<<62)
+		if err != nil {
+			t.Fatalf("HistoryPoints: %v", err)
+		}
+		if len(got) != maxHistoryPoints {
+			t.Fatalf("HistoryPoints returned %d points, want capped at %d (inserted %d)", len(got), maxHistoryPoints, total)
 		}
 	})
 }

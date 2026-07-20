@@ -1,27 +1,54 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26-alpine AS builder
+# --- UI stage: build the React app with Vite -------------------------------
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS ui
+
+WORKDIR /app/web
+
+# Copy manifest + lockfile first for better layer caching.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --ignore-scripts
+
+# Copy the rest of the UI source and build.
+COPY web/ ./
+RUN npm run build
+
+# --- Builder stage: compile the Go binary, embedding the built UI ----------
+FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+
+ARG VERSION=dev
 
 WORKDIR /app
 
-# Copy go mod files first for better layer caching
+# Copy go mod files first for better layer caching.
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
+# Copy source code.
 COPY . .
 
-# Build the application
+# Overlay the freshly-built UI so web/embed.go's `//go:embed all:dist`
+# embeds real assets instead of the repo's tracked web/dist/.gitkeep
+# placeholder (see .dockerignore, which excludes any local web/dist so this
+# copy is always the authoritative one).
+COPY --from=ui /app/web/dist ./web/dist
+
 RUN CGO_ENABLED=0 \
-    go build -ldflags="-w -s" -o tempestwx-utilities main.go
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /tempestwx-utilities .
 
-# Final stage
-FROM cgr.dev/chainguard/static:latest
+# --- Final stage: non-root static image -------------------------------------
+FROM cgr.dev/chainguard/static:latest@sha256:60582b2ae6074f641094af0f370d4ab241aab271858a66223dcde7eee9f51638
 
-# Copy binary
-COPY --from=builder /app/tempestwx-utilities /tempestwx-utilities
+COPY --from=builder /tempestwx-utilities /tempestwx-utilities
 
-# Use non-root user
 USER 65532:65532
+
+EXPOSE 8080
+
+# The final image has no shell/curl/wget, so the binary probes itself via
+# its `healthcheck` subcommand (see runHealthcheck in main.go), which GETs
+# its own /healthz and exits 0/1 accordingly.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/tempestwx-utilities", "healthcheck"]
 
 ENTRYPOINT ["/tempestwx-utilities"]
