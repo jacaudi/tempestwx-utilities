@@ -10,6 +10,9 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -52,6 +55,15 @@ type Deps struct {
 	// the server-held TOKEN (which satisfies WeatherFlowProxy); tests pass a
 	// fake or a *tempestapi.Client pointed at an httptest.Server.
 	WeatherFlow WeatherFlowProxy
+
+	// TracerProvider is the otelhttp middleware's span source (Task 1.6).
+	// Nil means "use the OTel global TracerProvider" -- otelhttp.WithTracerProvider
+	// already treats a nil provider as a no-op, falling back to
+	// otel.GetTracerProvider() internally, so New does not need its own
+	// nil-check. Production leaves this nil (main wires OTel globally via
+	// internal/otel.Setup, Task 6.4); tests inject a
+	// tracetest.SpanRecorder-backed provider for hermetic span assertions.
+	TracerProvider trace.TracerProvider
 }
 
 // New builds the HTTP server: the embedded UI with SPA fallback, security
@@ -65,8 +77,10 @@ func New(deps Deps) *http.Server {
 	registerProxy(mux, deps)
 	registerStatic(mux, deps)
 
+	handler := otelhttp.NewHandler(securityHeaders(mux), "http.server", otelhttp.WithTracerProvider(deps.TracerProvider))
+
 	return &http.Server{
-		Handler:           securityHeaders(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

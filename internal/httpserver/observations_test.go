@@ -220,6 +220,33 @@ func TestAPI_History(t *testing.T) {
 	})
 }
 
+// TestAPI_ObservationsNilStore proves both observation handlers 503 (not
+// panic) when Deps.Observations is nil -- the postgres-only edge case (Task
+// 1.6) where main.go starts the JSON API server without a sqlite writer.
+func TestAPI_ObservationsNilStore(t *testing.T) {
+	srv := New(testDepsWithObservations(nil))
+
+	t.Run("current", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/observations/current", nil)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GET /api/observations/current = %d, want 503", rec.Code)
+		}
+	})
+
+	t.Run("history", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/observations/history?field=temp_air", nil)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GET /api/observations/history = %d, want 503", rec.Code)
+		}
+	})
+}
+
 // errUnknownFieldForTest simulates the sqlite package's own "unknown history
 // field" error without importing sqlite's unexported error construction --
 // the handler must map ANY HistoryPoints error to 400, not just a specific

@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // testDeps returns a Deps wired to an in-memory static filesystem, so tests
@@ -139,6 +142,32 @@ func TestServer_Timeouts(t *testing.T) {
 	}
 	if srv.IdleTimeout == 0 {
 		t.Error("IdleTimeout is zero, want non-zero")
+	}
+}
+
+// TestServer_EmitsHTTPSpan proves the server's handler is wrapped in otelhttp:
+// a request through srv.Handler must produce one ended span, using an
+// injected TracerProvider (tracetest.SpanRecorder) rather than touching OTel
+// globals, so the test is hermetic and can run in parallel with the rest of
+// the suite.
+func TestServer_EmitsHTTPSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+
+	deps := testDeps()
+	deps.TracerProvider = tp
+	srv := New(deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	ended := recorder.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("got %d ended spans, want 1", len(ended))
+	}
+	if got := ended[0].Name(); got != "http.server" {
+		t.Fatalf("span name = %q, want %q", got, "http.server")
 	}
 }
 

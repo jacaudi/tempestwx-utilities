@@ -110,6 +110,11 @@ func registerObservations(mux *http.ServeMux, deps Deps) {
 // single-station appliance has no serial to scope by) as Contract C's
 // currentObservation, including the server-computed derived fields.
 func handleCurrentObservation(w http.ResponseWriter, r *http.Request, reader ObservationReader) {
+	if reader == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "observation store not configured")
+		return
+	}
+
 	ctx := r.Context()
 
 	obs, err := reader.LatestObservationAny(ctx)
@@ -141,6 +146,11 @@ func handleCurrentObservation(w http.ResponseWriter, r *http.Request, reader Obs
 // HistoryPoints, whose allowlist rejects an unknown field -- that rejection
 // is mapped to 400 here, not re-validated.
 func handleHistory(w http.ResponseWriter, r *http.Request, reader ObservationReader) {
+	if reader == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "observation store not configured")
+		return
+	}
+
 	ctx := r.Context()
 	q := r.URL.Query()
 
