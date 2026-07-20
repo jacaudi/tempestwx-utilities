@@ -131,3 +131,22 @@ func TestProxy_ForecastAndAlmanac(t *testing.T) {
 		}
 	}
 }
+
+// TestProxy_NilWeatherFlow proves all three proxy handlers 503 (not panic)
+// when Deps.WeatherFlow is nil -- calling a method on a nil interface value
+// panics with no dynamic type to dispatch to, and handleCurrentObservation
+// already guards its own nil ObservationReader dependency the same way, but
+// registerProxy had no equivalent guard before this fix (SGE review M7).
+func TestProxy_NilWeatherFlow(t *testing.T) {
+	srv := New(testDepsWithWeatherFlow(nil))
+
+	for _, ep := range []string{"/api/station", "/api/forecast", "/api/almanac"} {
+		req := httptest.NewRequest(http.MethodGet, ep, nil)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GET %s (nil WeatherFlow) = %d, want 503", ep, rec.Code)
+		}
+	}
+}

@@ -632,4 +632,45 @@ func TestReader_HistoryPoints(t *testing.T) {
 			t.Fatalf("tempest_observations unusable after rejected field: %v", err)
 		}
 	})
+
+	// caps_at_max_history_points proves an unbounded [from, to] range can't
+	// dump the whole table through the single writer connection (SGE review
+	// I1): rows beyond maxHistoryPoints are truncated rather than all
+	// returned. Rows are inserted directly via w.db (bypassing the async
+	// Writer channel/batching) so inserting maxHistoryPoints+1 rows is fast
+	// and can't be silently dropped by the channel's non-blocking enqueue.
+	t.Run("caps_at_max_history_points", func(t *testing.T) {
+		w := newTestWriter(t)
+		ctx := t.Context()
+
+		const total = maxHistoryPoints + 5
+
+		tx, err := w.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		stmt, err := tx.PrepareContext(ctx, `INSERT INTO tempest_observations (id, serial_number, timestamp, temp_air) VALUES (?, ?, ?, ?)`)
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		for i := range total {
+			if _, err := stmt.ExecContext(ctx, uuid.Must(uuid.NewV7()).String(), "ST-CAP", int64(1700000000+i), 20.0); err != nil {
+				t.Fatalf("insert row %d: %v", i, err)
+			}
+		}
+		if err := stmt.Close(); err != nil {
+			t.Fatalf("close stmt: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+
+		got, err := w.HistoryPoints(ctx, "temp_air", 0, 1<<62)
+		if err != nil {
+			t.Fatalf("HistoryPoints: %v", err)
+		}
+		if len(got) != maxHistoryPoints {
+			t.Fatalf("HistoryPoints returned %d points, want capped at %d (inserted %d)", len(got), maxHistoryPoints, total)
+		}
+	})
 }

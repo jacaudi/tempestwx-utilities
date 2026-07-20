@@ -34,14 +34,20 @@ func TestMigrate_CreatesTablesAndVersion(t *testing.T) {
 		assertTableExists(t, db, table)
 	}
 	assertIndexExists(t, db, "idx_obs_serial_time")
-	assertSchemaVersion(t, db, 1)
+	// idx_obs_time (0002_add_timestamp_index.sql) leads with timestamp alone
+	// so the read hot-path (LatestObservationAny's ORDER BY timestamp DESC
+	// LIMIT 1 and HistoryPoints' WHERE timestamp BETWEEN ?) can use an index
+	// instead of a full table scan + sort -- idx_obs_serial_time can't serve
+	// either query since it leads with serial_number (SGE review I1).
+	assertIndexExists(t, db, "idx_obs_time")
+	assertSchemaVersion(t, db, 2)
 
 	// Idempotent: running Migrate again must not fail and must leave the
 	// schema at the same version.
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("second Migrate() error = %v", err)
 	}
-	assertSchemaVersion(t, db, 1)
+	assertSchemaVersion(t, db, 2)
 }
 
 func assertTableExists(t *testing.T, db *sql.DB, name string) {

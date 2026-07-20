@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -218,6 +219,50 @@ func TestAPI_History(t *testing.T) {
 			t.Fatalf("GET /api/observations/history?field=not_a_real_field = %d, want 400", rec.Code)
 		}
 	})
+}
+
+// TestAPI_CurrentObservation_NaNSafe proves GET /api/observations/current
+// returns a fully-parseable JSON body with finite numbers even when a
+// derived field's input goes non-finite: humidity=0 sends
+// tempestudp.DewPointC into math.Log(0) == -Inf, which propagates to NaN.
+// encoding/json rejects NaN outright, so an unsanitized dewPoint would make
+// json.Encoder.Encode fail after the 200 status line was already written,
+// leaving the client with 200 + an EMPTY body instead of an error (SGE
+// review M1). Only wetBulb was guarded before this fix.
+func TestAPI_CurrentObservation_NaNSafe(t *testing.T) {
+	reader := &fakeObservationReader{
+		obs: sqlite.Observation{
+			SerialNumber: "ST-00001",
+			Timestamp:    1700000000,
+			TempAir:      20.5,
+			Humidity:     0, // triggers DewPointC's math.Log(0) -> NaN
+			Pressure:     1013.25,
+		},
+	}
+
+	srv := New(testDepsWithObservations(reader))
+	req := httptest.NewRequest(http.MethodGet, "/api/observations/current", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/observations/current = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v (body: %q) -- body must be valid JSON, not empty from a failed NaN encode", err, rec.Body.String())
+	}
+
+	for _, field := range []string{"dewPoint", "heatIndex", "feelsLike", "windChill"} {
+		v, ok := got[field].(float64)
+		if !ok {
+			t.Fatalf("response[%q] = %v (%T), want a JSON number", field, got[field], got[field])
+		}
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			t.Errorf("response[%q] = %v, want a finite number", field, v)
+		}
+	}
 }
 
 // TestAPI_ObservationsNilStore proves both observation handlers 503 (not

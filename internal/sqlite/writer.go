@@ -27,6 +27,16 @@ const (
 	// single writer to complete at least one batch flush; a discrete event is
 	// rare, so blocking briefly is correct, not silent loss.
 	eventBlockTimeout = 5 * time.Second
+
+	// maxHistoryPoints caps the rows HistoryPoints returns for an unbounded
+	// or wide [from, to] range. Without a cap, a request spanning the whole
+	// table would scan and marshal every row through the single writer
+	// connection (SetMaxOpenConns(1)), serializing behind and starving the
+	// writer goroutine. 10000 is generous headroom over any chart the UI
+	// currently renders (the /history endpoint has no UI consumer yet, so
+	// truncation risk today is low) while still bounding worst-case response
+	// size and query cost (SGE review I1).
+	maxHistoryPoints = 10000
 )
 
 // rowKind discriminates the payload carried by a rowEnvelope.
@@ -843,8 +853,10 @@ type Point struct {
 }
 
 // HistoryPoints returns every tempest_observations sample for field with a
-// timestamp in [from, to], ordered by timestamp ascending. field must be a
-// key of historyFieldColumns; an unknown field (including anything
+// timestamp in [from, to], ordered by timestamp ascending, capped at
+// maxHistoryPoints (an unbounded or wide range is truncated rather than
+// returning the whole table -- SGE review I1). field must be a key of
+// historyFieldColumns; an unknown field (including anything
 // SQL-injection-shaped) is rejected before any query is built or executed.
 // Rows where the column is SQL NULL (e.g. temp_wetbulb before wet-bulb
 // convergence) are omitted rather than reported as a misleading 0.
@@ -855,8 +867,8 @@ func (w *Writer) HistoryPoints(ctx context.Context, field string, from, to int64
 	}
 
 	query := fmt.Sprintf( //nolint:gosec // column comes from historyFieldColumns' value, never the raw field argument
-		`SELECT timestamp, %s FROM tempest_observations WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp`,
-		column,
+		`SELECT timestamp, %s FROM tempest_observations WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp LIMIT %d`,
+		column, maxHistoryPoints,
 	)
 
 	rows, err := w.db.QueryContext(ctx, query, from, to)

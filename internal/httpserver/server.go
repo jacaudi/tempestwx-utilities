@@ -100,6 +100,25 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// isRegularFile reports whether name Opens successfully in fsys AND is not a
+// directory. Open("assets") succeeds for a directory just as it does for a
+// file, so a directory path (e.g. GET /assets/) would otherwise fall into
+// the "serve as an immutable static asset" branch and let
+// http.ServeFileFS auto-generate a directory listing (SGE review M2) -- a
+// directory must instead be treated like a missing asset and fall through
+// to the SPA/404 branch below.
+func isRegularFile(fsys fs.FS, name string) bool {
+	f, err := fsys.Open(name)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+	info, err := f.Stat()
+	return err == nil && !info.IsDir()
+}
+
 // registerHealthz registers the liveness endpoint used by container
 // orchestration to confirm the process is up.
 func registerHealthz(mux *http.ServeMux) {
@@ -137,8 +156,7 @@ func registerStatic(mux *http.ServeMux, deps Deps) {
 		}
 
 		if assetPath != indexPage && fs.ValidPath(assetPath) {
-			if f, err := deps.StaticFS.Open(assetPath); err == nil {
-				_ = f.Close()
+			if isRegularFile(deps.StaticFS, assetPath) {
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 				http.ServeFileFS(w, r, deps.StaticFS, assetPath)
 				return
@@ -149,6 +167,10 @@ func registerStatic(mux *http.ServeMux, deps Deps) {
 			}
 		}
 
+		// SPA fallback: explicitly no-cache, so a redeploy with new hashed
+		// asset names can't be defeated by a heuristically-cached index
+		// (SGE review M3).
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFileFS(w, r, deps.StaticFS, indexPage)
 	})
 }

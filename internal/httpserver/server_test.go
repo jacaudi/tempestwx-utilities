@@ -89,6 +89,48 @@ func TestServer_SPAFallback(t *testing.T) {
 		}
 	})
 
+	t.Run("SPA fallback index is explicitly no-cache", func(t *testing.T) {
+		// A redeploy with new hashed asset names must not be defeated by a
+		// heuristically-cached index.html: registerStatic's doc comment
+		// already claimed "uncached" for the SPA fallback, but no
+		// Cache-Control header was actually set (SGE review M3).
+		req := httptest.NewRequest(http.MethodGet, "/some/spa/route", nil)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Fatalf("GET /some/spa/route Cache-Control = %q, want %q", cc, "no-cache")
+		}
+	})
+
+	t.Run("asset branch still carries immutable, not no-cache", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+			t.Fatalf("GET /assets/app.js Cache-Control = %q, want to contain immutable", cc)
+		}
+	})
+
+	t.Run("directory path does not serve a directory listing", func(t *testing.T) {
+		// deps.StaticFS.Open("assets") succeeds (it's a directory), so the
+		// current code sets an immutable cache header and lets
+		// http.ServeFileFS auto-generate a directory listing for a request
+		// like GET /assets/ (SGE review M2). A directory must be treated
+		// like a missing asset: fall through to the SPA/404 branch instead.
+		req := httptest.NewRequest(http.MethodGet, "/assets/", nil)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+
+		if strings.Contains(rec.Body.String(), "<a href=") {
+			t.Fatalf("GET /assets/ served an auto-generated directory listing: %s", rec.Body.String())
+		}
+		if cc := rec.Header().Get("Cache-Control"); strings.Contains(cc, "immutable") {
+			t.Fatalf("GET /assets/ Cache-Control = %q, must not be immutable for a directory", cc)
+		}
+	})
+
 	t.Run("api namespace reserved, never serves SPA index", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/observations", nil)
 		rec := httptest.NewRecorder()

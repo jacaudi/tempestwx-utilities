@@ -211,11 +211,11 @@ func toCurrentObservation(obs sqlite.Observation, trend string) currentObservati
 		// by internal/sqlite's writer -- zero-filled rather than invented; see
 		// the task report's DONE_WITH_CONCERNS note.
 		LocalDayRainAccumulation: 0,
-		FeelsLike:                feelsLikeC(obs.TempAir, obs.Humidity, obs.WindAvg),
-		DewPoint:                 tempestudp.DewPointC(obs.TempAir, obs.Humidity),
+		FeelsLike:                sanitize(feelsLikeC(obs.TempAir, obs.Humidity, obs.WindAvg)),
+		DewPoint:                 sanitize(tempestudp.DewPointC(obs.TempAir, obs.Humidity)),
 		WetBulbTemperature:       wetBulbTemperatureC(obs),
-		HeatIndex:                tempestudp.HeatIndexC(obs.TempAir, obs.Humidity),
-		WindChill:                windChillC(obs.TempAir, obs.WindAvg),
+		HeatIndex:                sanitize(tempestudp.HeatIndexC(obs.TempAir, obs.Humidity)),
+		WindChill:                sanitize(windChillC(obs.TempAir, obs.WindAvg)),
 		PressureTrend:            trend,
 	}
 }
@@ -230,6 +230,21 @@ func deref[T any](p *T) T {
 		return zero
 	}
 	return *p
+}
+
+// sanitize maps a non-finite float (NaN or ±Inf) to 0, matching this file's
+// "absent means zero" convention for every other optional field (see deref).
+// encoding/json rejects NaN/Inf outright: an unsanitized non-finite value
+// reaching writeJSON's json.Encoder.Encode fails AFTER the 200 status line
+// is already written, so the client gets 200 with an empty body instead of
+// an error (SGE review M1). dewPoint (math.Log(0) at humidity=0), heatIndex,
+// feelsLike, and windChill all route through this; wetBulbTemperatureC
+// already guards its own NaN case, so it does not need it.
+func sanitize(f float64) float64 {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0
+	}
+	return f
 }
 
 // wetBulbTemperatureC returns obs's wet bulb temperature: the writer's own

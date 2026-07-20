@@ -51,6 +51,11 @@ func registerProxy(mux *http.ServeMux, deps Deps) {
 // for the flagged concern about whether WeatherFlow's envelope already
 // matches the UI's expected shape).
 func proxyWeatherFlow(w http.ResponseWriter, r *http.Request, wf WeatherFlowProxy, path string) {
+	if wf == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "weatherflow client not configured")
+		return
+	}
+
 	ctx := r.Context()
 
 	body, contentType, status, err := wf.Proxy(ctx, path, r.URL.Query())
