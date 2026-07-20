@@ -22,6 +22,7 @@ import (
 	"tempestwx-utilities/internal/otel"
 	"tempestwx-utilities/internal/postgres"
 	"tempestwx-utilities/internal/prometheus"
+	"tempestwx-utilities/internal/radar"
 	"tempestwx-utilities/internal/sink"
 	"tempestwx-utilities/internal/sqlite"
 	"tempestwx-utilities/internal/tempestapi"
@@ -392,6 +393,14 @@ func main() {
 		}
 		if sw != nil {
 			deps.Observations = sw
+		}
+		enableRadar, err := config.ParseBoolEnv("ENABLE_RADAR")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if enableRadar {
+			sidecarURL := cmp.Or(os.Getenv("RADAR_SIDECAR_URL"), "http://radar-sidecar:8081")
+			deps.Radar = radar.NewProxy(sidecarURL)
 		}
 		srv = httpserver.New(deps)
 		srv.Addr = cmp.Or(os.Getenv("HTTP_ADDR"), ":8080")
