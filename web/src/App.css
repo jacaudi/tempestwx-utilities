@@ -1264,6 +1264,25 @@
   transform: translateY(-1px);
 }
 
+/* --- Radar card ------------------------------------------------ */
+.radar-card {
+  min-height: 320px;
+}
+
+.radar-map-container {
+  width: 100%;
+  height: 280px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.radar-status-message {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  text-align: center;
+  padding: 1rem 0;
+}
+
 /* --- Responsive dashboard grid ------------------------------------ */
 @media (max-width: 900px) {
   .dashboard-grid {
