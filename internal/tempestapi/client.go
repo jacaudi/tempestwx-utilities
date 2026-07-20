@@ -14,16 +14,40 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// defaultBaseURL is the production WeatherFlow REST host. It is the single
+// source for every request this client builds (ListStations, GetObservations,
+// Proxy) -- all three would need to change together if WeatherFlow's host
+// ever changed, so it lives once here rather than being hardcoded per method.
+const defaultBaseURL = "https://swd.weatherflow.com/swd/rest"
+
 type Client struct {
-	token string
-	http  *http.Client
+	token   string
+	http    *http.Client
+	baseURL string
 }
 
-func NewClient(token string) *Client {
-	return &Client{
-		token: token,
-		http:  &http.Client{Timeout: 30 * time.Second},
+// ClientOption configures a Client built by NewClient.
+type ClientOption func(*Client)
+
+// WithBaseURL overrides the WeatherFlow REST base URL. Production never sets
+// this (the zero-arg NewClient(token) call already points at WeatherFlow);
+// it exists so tests can redirect the client at an httptest.Server.
+func WithBaseURL(baseURL string) ClientOption {
+	return func(c *Client) {
+		c.baseURL = baseURL
 	}
+}
+
+func NewClient(token string, opts ...ClientOption) *Client {
+	c := &Client{
+		token:   token,
+		http:    &http.Client{Timeout: 30 * time.Second},
+		baseURL: defaultBaseURL,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 type Station struct {
@@ -35,7 +59,7 @@ type Station struct {
 }
 
 func (c *Client) ListStations(ctx context.Context) ([]Station, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://swd.weatherflow.com/swd/rest/stations", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/stations", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +128,7 @@ func (c *Client) ListStations(ctx context.Context) ([]Station, error) {
 }
 
 func (c *Client) GetObservations(ctx context.Context, station Station, startAt time.Time, endAt time.Time) ([]prometheus.Metric, error) {
-	url := fmt.Sprintf("https://swd.weatherflow.com/swd/rest/observations/device/%d?time_start=%d&time_end=%d", station.deviceID, startAt.Unix(), endAt.Unix())
+	url := fmt.Sprintf("%s/observations/device/%d?time_start=%d&time_end=%d", c.baseURL, station.deviceID, startAt.Unix(), endAt.Unix())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

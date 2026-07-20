@@ -46,6 +46,12 @@ type Deps struct {
 	// (Task 1.4). Production passes a *sqlite.Writer (which satisfies
 	// ObservationReader); tests pass a fake.
 	Observations ObservationReader
+
+	// WeatherFlow backs GET /api/station, /api/forecast, and /api/almanac
+	// (Task 1.5). Production passes a *tempestapi.Client constructed from
+	// the server-held TOKEN (which satisfies WeatherFlowProxy); tests pass a
+	// fake or a *tempestapi.Client pointed at an httptest.Server.
+	WeatherFlow WeatherFlowProxy
 }
 
 // New builds the HTTP server: the embedded UI with SPA fallback, security
@@ -56,6 +62,7 @@ func New(deps Deps) *http.Server {
 	mux := http.NewServeMux()
 	registerHealthz(mux)
 	registerObservations(mux, deps)
+	registerProxy(mux, deps)
 	registerStatic(mux, deps)
 
 	return &http.Server{
