@@ -35,9 +35,10 @@ import (
 )
 
 // version is the running binary's version, recorded as the OTel
-// service.version resource attribute (see otel.Config.ServiceVersion). No
-// -ldflags injection is wired yet — no present requirement asked for it — so
-// it stays the standard "dev" default until one does.
+// service.version resource attribute (see otel.Config.ServiceVersion). It is
+// injected at build time via `-ldflags -X main.version=${VERSION}` (see the
+// Dockerfile and buildx bake config); it stays the "dev" default for
+// non-release/local builds that don't set VERSION.
 var version = "dev"
 
 // teeHandler fans every slog.Record out to multiple handlers. It exists to
@@ -159,8 +160,20 @@ func selectStore(enablePostgres bool, sqlitePathEnv string) storeChoice {
 // returns 0 if that responds 200, 1 otherwise.
 func runHealthcheck() int {
 	addr := cmp.Or(os.Getenv("HTTP_ADDR"), ":8080")
+	// HTTP_ADDR may be either ":8080" (bind-all shorthand) or "0.0.0.0:8080"
+	// (explicit host:port) — net.SplitHostPort handles both, returning the
+	// port either way. The healthcheck always probes 127.0.0.1 regardless of
+	// the configured bind host, since it runs inside the same container as
+	// the server it's checking. If SplitHostPort fails to find a port
+	// separator at all (a malformed HTTP_ADDR with no ":"), fall back to
+	// treating addr as the port suffix, matching the pre-fix behavior.
+	port := addr
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		port = p
+	}
+	url := "http://" + net.JoinHostPort("127.0.0.1", port) + "/healthz"
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://127.0.0.1" + addr + "/healthz")
+	resp, err := client.Get(url) //nolint:gosec // G107: localhost self-healthcheck, addr from controlled HTTP_ADDR env, not external input
 	if err != nil {
 		return 1
 	}

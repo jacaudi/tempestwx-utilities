@@ -155,6 +155,31 @@ func TestRunHealthcheck_HealthyServer(t *testing.T) {
 	}
 }
 
+// TestRunHealthcheck_HostPortShape asserts runHealthcheck works when
+// HTTP_ADDR is set in "host:port" shape (e.g. "0.0.0.0:8080" or, as here,
+// "127.0.0.1:<port>"), not just the ":port" shape used elsewhere in this
+// file. runHealthcheck must always probe 127.0.0.1 regardless of the host
+// component in HTTP_ADDR, since the healthcheck runs inside the same
+// container as the server it's probing.
+func TestRunHealthcheck_HostPortShape(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse httptest URL: %v", err)
+	}
+	t.Setenv("HTTP_ADDR", "127.0.0.1:"+u.Port())
+
+	if got := runHealthcheck(); got != 0 {
+		t.Fatalf("runHealthcheck() = %d, want 0 for a healthy /healthz with host:port HTTP_ADDR", got)
+	}
+}
+
 // TestRunHealthcheck_Unreachable asserts the failure path: nothing listening
 // on the configured address yields a non-zero exit code. A listener is
 // opened and immediately closed to obtain a port number that is (briefly)
