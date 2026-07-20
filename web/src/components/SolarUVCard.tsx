@@ -1,5 +1,6 @@
 import type { CurrentObservation } from '../types/weather';
 import { GlassCard } from './GlassCard';
+import { formatX } from '../utils/format';
 
 interface SolarUVCardProps {
   current: CurrentObservation;
@@ -53,7 +54,7 @@ export function SolarUVCard({ current }: SolarUVCardProps) {
         <div className="uv-section">
           <div className="uv-index-display">
             <span className={`uv-number ${uvColorClass(current.uvIndex)}`}>
-              {current.uvIndex.toFixed(1)}
+              {formatX(current.uvIndex, (n) => n.toFixed(1))}
             </span>
             <span className="uv-label">{uvLabel(current.uvIndex)}</span>
           </div>
@@ -75,7 +76,7 @@ export function SolarUVCard({ current }: SolarUVCardProps) {
         <div className="solar-section">
           <div className="solar-stat">
             <span className="stat-label">Solar Radiation</span>
-            <span className="stat-value">{Math.round(current.solarRadiation * 10) / 10} W/m²</span>
+            <span className="stat-value">{formatX(current.solarRadiation, (n) => `${Math.round(n * 10) / 10}`)} W/m²</span>
             <span className="stat-sublabel">{solarIntensity(current.solarRadiation)}</span>
           </div>
           <div className="solar-stat">

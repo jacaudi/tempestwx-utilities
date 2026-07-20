@@ -14,6 +14,7 @@ import { ForecastStrip } from './components/ForecastStrip';
 import { StationHealth } from './components/StationHealth';
 import { AlmanacCard } from './components/AlmanacCard';
 import { SettingsPanel } from './components/SettingsPanel';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import type { ThemeName } from './types/weather';
 import './App.css';
 
@@ -36,7 +37,10 @@ function App() {
     );
   }
 
-  if (error) {
+  // Only blank the dashboard for an INITIAL failure (no prior data yet). If a
+  // refresh fails but we already have `current` data, keep rendering the
+  // dashboard with what we have — the Header's `lastUpdated` conveys staleness.
+  if (error && !current) {
     return (
       <div className="error-screen">
         <h2>Connection Error</h2>
@@ -63,20 +67,22 @@ function App() {
         onSettingsClick={() => setSettingsOpen(true)}
       />
 
-      <main className="dashboard">
-        <div className="dashboard-grid">
-          <TemperatureHero current={current} unit={prefs.temperatureUnit} precipProbability={forecast[0]?.precipProbability} />
-          <WindCard current={current} unit={prefs.windUnit} />
-          <HumidityCard current={current} tempUnit={prefs.temperatureUnit} />
-          <PressureCard current={current} unit={prefs.pressureUnit} />
-          <SolarUVCard current={current} />
-          <RainCard current={current} unit={prefs.rainUnit} />
-          <LightningCard current={current} />
-          {status && <StationHealth status={status} />}
-          <ForecastStrip forecast={forecast} unit={prefs.temperatureUnit} />
-          {almanac && <AlmanacCard almanac={almanac} unit={prefs.temperatureUnit} />}
-        </div>
-      </main>
+      <ErrorBoundary>
+        <main className="dashboard">
+          <div className="dashboard-grid">
+            <TemperatureHero current={current} unit={prefs.temperatureUnit} precipProbability={forecast[0]?.precipProbability} />
+            <WindCard current={current} unit={prefs.windUnit} />
+            <HumidityCard current={current} tempUnit={prefs.temperatureUnit} />
+            <PressureCard current={current} unit={prefs.pressureUnit} />
+            <SolarUVCard current={current} />
+            <RainCard current={current} unit={prefs.rainUnit} />
+            <LightningCard current={current} />
+            {status && <StationHealth status={status} />}
+            <ForecastStrip forecast={forecast} unit={prefs.temperatureUnit} />
+            {almanac && <AlmanacCard almanac={almanac} unit={prefs.temperatureUnit} />}
+          </div>
+        </main>
+      </ErrorBoundary>
 
       <SettingsPanel
         isOpen={settingsOpen}
