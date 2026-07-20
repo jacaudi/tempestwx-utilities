@@ -205,6 +205,22 @@
   color: var(--text-muted);
 }
 
+.last-updated.stale {
+  color: var(--danger-color);
+}
+
+.stale-badge {
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 10px;
+  background: var(--danger-color);
+  color: var(--bg-primary);
+}
+
 .settings-btn {
   display: flex;
   align-items: center;

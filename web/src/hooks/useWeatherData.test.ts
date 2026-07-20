@@ -14,7 +14,6 @@ vi.mock('../api/tempestApi', () => ({
   fetchCurrentObservation: vi.fn(),
   fetchStationMeta: vi.fn(),
   fetchForecast: vi.fn(),
-  fetchHourlyForecast: vi.fn(),
   fetchStationStatus: vi.fn(),
   fetchStationAlmanac: vi.fn(),
 }));
@@ -92,7 +91,6 @@ describe('useWeatherData', () => {
       .mockRejectedValueOnce(new Error('network down'));
     mockedApi.fetchStationMeta.mockResolvedValue(baseStation);
     mockedApi.fetchForecast.mockResolvedValue([]);
-    mockedApi.fetchHourlyForecast.mockResolvedValue([]);
     mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
     mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
 
@@ -112,7 +110,6 @@ describe('useWeatherData', () => {
     mockedApi.fetchCurrentObservation.mockResolvedValue(baseObs);
     mockedApi.fetchStationMeta.mockRejectedValue(new Error('weatherflow down'));
     mockedApi.fetchForecast.mockRejectedValue(new Error('weatherflow down'));
-    mockedApi.fetchHourlyForecast.mockRejectedValue(new Error('weatherflow down'));
     mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
     mockedApi.fetchStationAlmanac.mockRejectedValue(new Error('weatherflow down'));
 
@@ -122,6 +119,29 @@ describe('useWeatherData', () => {
     expect(result.current.isStale).toBe(false);
     expect(result.current.error).toBeNull();
     expect(result.current.station).toBeNull();
+  });
+
+  it('retains the prior station status on a subsequent status-fetch failure instead of overwriting it with an offline default (M5)', async () => {
+    mockedApi.fetchCurrentObservation.mockResolvedValue(baseObs);
+    mockedApi.fetchStationMeta.mockResolvedValue(baseStation);
+    mockedApi.fetchForecast.mockResolvedValue([]);
+    mockedApi.fetchStationStatus
+      .mockResolvedValueOnce(baseStatus)
+      .mockRejectedValueOnce(new Error('status endpoint down'));
+    mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+
+    const { result } = renderHook(() => useWeatherData());
+
+    await waitFor(() => expect(result.current.status).toEqual(baseStatus));
+
+    result.current.refresh();
+
+    await waitFor(() => expect(result.current.current).toEqual(baseObs));
+    // The status fetch on this second run rejected -- the prior good status
+    // must be retained (not overwritten with the offline default), and the
+    // observation slice must remain populated.
+    expect(result.current.status).toEqual(baseStatus);
+    expect(mockedApi.fetchStationStatus).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -158,7 +178,6 @@ describe('useWeatherData - isLoading with polling', () => {
     );
     mockedApi.fetchStationMeta.mockResolvedValue(baseStation);
     mockedApi.fetchForecast.mockResolvedValue([]);
-    mockedApi.fetchHourlyForecast.mockResolvedValue([]);
     mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
     mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
 
@@ -176,5 +195,65 @@ describe('useWeatherData - isLoading with polling', () => {
 
     expect(result.current.current).toEqual(baseObs);
     expect(result.current.isLoading).toBe(false);
+  });
+
+  it('does not clear isLoading for a run that a newer refresh() call has already superseded', async () => {
+    // First loadData's fetchCurrentObservation hangs until aborted (mirrors
+    // real fetch abort behavior); the second (superseding) call also hangs
+    // until manually resolved, so we can assert isLoading is still true
+    // while it is in flight -- proving the aborted first run did not clear
+    // the spinner out from under it.
+    let obsCallCount = 0;
+    let resolveSecondCall: ((obs: CurrentObservation) => void) | undefined;
+    mockedApi.fetchCurrentObservation.mockImplementation(
+      (_stationId?: number, signal?: AbortSignal) => {
+        obsCallCount += 1;
+        if (obsCallCount === 1) {
+          return new Promise<CurrentObservation>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => {
+              const err = new Error('Aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          });
+        }
+        return new Promise<CurrentObservation>((resolve) => {
+          resolveSecondCall = resolve;
+        });
+      }
+    );
+    mockedApi.fetchStationMeta.mockResolvedValue(baseStation);
+    mockedApi.fetchForecast.mockResolvedValue([]);
+    mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
+    mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+
+    const { result } = renderHook(() => useWeatherData());
+
+    expect(result.current.isLoading).toBe(true);
+
+    // Trigger a second, superseding loadData run (aborts the first, in-flight
+    // run) while the first run's fetchCurrentObservation is still pending.
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    // The first run's allSettled has now resolved (its fetch rejected from
+    // the abort), but the second run is still in flight -- isLoading must
+    // still be true.
+    expect(result.current.isLoading).toBe(true);
+
+    // Let the second run's fetch resolve, completing it. Fake timers are
+    // active in this describe block, so testing-library's `waitFor` (which
+    // polls via setTimeout) would hang -- flush microtasks directly instead,
+    // matching the pattern the sibling test above uses.
+    await act(async () => {
+      resolveSecondCall?.(baseObs);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.current).toEqual(baseObs);
   });
 });

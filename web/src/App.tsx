@@ -19,7 +19,7 @@ import type { ThemeName } from './types/weather';
 import './App.css';
 
 function App() {
-  const { station, current, forecast, status, almanac, isLoading, error, lastUpdated, refresh } =
+  const { station, current, forecast, status, almanac, isLoading, error, lastUpdated, isStale, refresh } =
     useWeatherData();
   const { prefs, setPrefs } = useUnits();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -64,6 +64,7 @@ function App() {
         station={station}
         status={status}
         lastUpdated={lastUpdated}
+        isStale={isStale}
         onSettingsClick={() => setSettingsOpen(true)}
       />
 

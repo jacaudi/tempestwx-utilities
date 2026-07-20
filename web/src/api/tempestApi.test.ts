@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { fetchCurrentObservation } from './tempestApi';
+import { fetchCurrentObservation, fetchStationStatus } from './tempestApi';
 import tempestApiSource from './tempestApi.ts?raw';
 import { PrecipitationType, PressureTrend } from '../types/weather';
 import type { CurrentObservation } from '../types/weather';
@@ -72,6 +72,39 @@ describe('fetchCurrentObservation', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }));
 
     await expect(fetchCurrentObservation()).rejects.toThrow();
+  });
+});
+
+describe('fetchStationStatus', () => {
+  it('rejects instead of returning an offline default when the underlying fetch fails', async () => {
+    // A transient server error must surface as a rejection so useWeatherData's
+    // allSettled retains the prior good status, rather than fetchStationStatus
+    // swallowing the error into a fake {isOnline:false, lastReport:0, ...}
+    // default that would overwrite good prior state (M5).
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }));
+
+    await expect(fetchStationStatus()).rejects.toThrow();
+  });
+
+  it('derives an online StationStatus from a successful current-observation fetch', async () => {
+    // mockObservation's fixed timestamp is years stale, which would derive
+    // isOnline=false regardless of this fix -- use a fresh, "just reported"
+    // observation instead so this test actually exercises the online branch.
+    const freshObservation = { ...mockObservation, timestamp: Date.now() / 1000 };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(freshObservation),
+      })
+    );
+
+    const result = await fetchStationStatus();
+
+    expect(result.isOnline).toBe(true);
+    expect(result.lastReport).toBe(freshObservation.timestamp);
+    expect(result.batteryLevel).toBe(mockObservation.battery);
   });
 });
 

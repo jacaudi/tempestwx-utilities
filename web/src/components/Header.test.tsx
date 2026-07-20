@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
 import { formatCoord } from './formatCoord';
+import { Header } from './Header';
 
 describe('formatCoord', () => {
   it('renders a northern, western station as N/W', () => {
@@ -16,5 +18,24 @@ describe('formatCoord', () => {
 
   it('treats zero latitude/longitude as N/E', () => {
     expect(formatCoord(0, 0)).toBe('0.0000°N, 0.0000°E');
+  });
+});
+
+describe('Header stale indicator (M6a)', () => {
+  const baseProps = {
+    station: null,
+    status: null,
+    lastUpdated: new Date(2026, 0, 1, 12, 30),
+    onSettingsClick: () => {},
+  };
+
+  it('renders a stale indicator when isStale is true', () => {
+    render(<Header {...baseProps} isStale={true} />);
+    expect(screen.getByText(/stale/i)).toBeInTheDocument();
+  });
+
+  it('does not render a stale indicator when isStale is false', () => {
+    render(<Header {...baseProps} isStale={false} />);
+    expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
   });
 });

@@ -7,7 +7,7 @@
  *   - fetchCurrentObservation is the core: GET /api/observations/current
  *     reads this station's own SQLite store and works in UDP mode with no
  *     TOKEN configured.
- *   - fetchStationMeta/fetchForecast/fetchHourlyForecast/fetchStationAlmanac
+ *   - fetchStationMeta/fetchForecast/fetchStationAlmanac
  *     are best-effort passthrough proxies to WeatherFlow (GET /api/station,
  *     /api/forecast, /api/almanac). They require a server-held TOKEN this
  *     appliance may not have, and the proxy forwards WeatherFlow's response
@@ -19,7 +19,6 @@ import type {
   CurrentObservation,
   StationMeta,
   ForecastDay,
-  HourlyForecast,
   StationStatus,
   StationAlmanac,
 } from '../types/weather';
@@ -83,50 +82,29 @@ export async function fetchForecast(
 }
 
 // ---------------------------------------------------------------------------
-// Hourly forecast -- same upstream response as fetchForecast (design §11:
-// almanac/forecast are both better_forecast passthroughs); parsed from the
-// hourly portion server-side is out of scope here (raw passthrough).
-// ---------------------------------------------------------------------------
-export async function fetchHourlyForecast(
-  _stationId?: number,
-  signal?: AbortSignal
-): Promise<HourlyForecast[]> {
-  return getJSON<HourlyForecast[]>(ENDPOINTS.forecast, signal);
-}
-
-// ---------------------------------------------------------------------------
 // Station status / health -- Contract C has no dedicated status endpoint
 // (design §11), so this derives a best-effort StationStatus from the latest
 // CurrentObservation rather than inventing a server route out of scope for
 // this task. signalStrength and firmwareVersion have no source in Contract
-// C and fall back to a safe default (0 / empty string). Any failure --
-// including the underlying fetch failing or being aborted -- degrades to a
-// safe "unknown/offline" default rather than throwing, since this is a
-// supplementary card, not the core data path.
+// C and fall back to a safe default (0 / empty string). A failure here
+// REJECTS like every other fetch* in this file (M5): the underlying
+// observation fetch is the one slice useWeatherData's allSettled can retain
+// the prior value for on failure, and swallowing the error into a fake
+// "offline" default would instead overwrite a known-good status with one.
 // ---------------------------------------------------------------------------
 export async function fetchStationStatus(
   _deviceId?: number,
   signal?: AbortSignal
 ): Promise<StationStatus> {
-  try {
-    const obs = await fetchCurrentObservation(undefined, signal);
-    const ageSeconds = Date.now() / 1000 - obs.timestamp;
-    return {
-      isOnline: ageSeconds <= STATION_ONLINE_THRESHOLD_SECONDS,
-      lastReport: obs.timestamp,
-      batteryLevel: obs.battery,
-      signalStrength: 0,
-      firmwareVersion: '',
-    };
-  } catch {
-    return {
-      isOnline: false,
-      lastReport: 0,
-      batteryLevel: 0,
-      signalStrength: 0,
-      firmwareVersion: '',
-    };
-  }
+  const obs = await fetchCurrentObservation(undefined, signal);
+  const ageSeconds = Date.now() / 1000 - obs.timestamp;
+  return {
+    isOnline: ageSeconds <= STATION_ONLINE_THRESHOLD_SECONDS,
+    lastReport: obs.timestamp,
+    batteryLevel: obs.battery,
+    signalStrength: 0,
+    firmwareVersion: '',
+  };
 }
 
 // ---------------------------------------------------------------------------

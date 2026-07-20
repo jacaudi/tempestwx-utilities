@@ -3,7 +3,6 @@ import type {
   CurrentObservation,
   StationMeta,
   ForecastDay,
-  HourlyForecast,
   StationStatus,
   StationAlmanac,
 } from '../types/weather';
@@ -11,7 +10,6 @@ import {
   fetchCurrentObservation,
   fetchStationMeta,
   fetchForecast,
-  fetchHourlyForecast,
   fetchStationStatus,
   fetchStationAlmanac,
 } from '../api/tempestApi';
@@ -27,7 +25,6 @@ export interface WeatherData {
   station: StationMeta | null;
   current: CurrentObservation | null;
   forecast: ForecastDay[];
-  hourly: HourlyForecast[];
   status: StationStatus | null;
   almanac: StationAlmanac | null;
   isLoading: boolean;
@@ -43,7 +40,7 @@ export interface WeatherData {
 
 // Applies a settled slice's result to its setter if it fulfilled, leaving
 // prior state untouched otherwise -- the "retain on failure" rule every
-// non-core slice (station/forecast/hourly/status/almanac) shares below.
+// non-core slice (station/forecast/status/almanac) shares below.
 function applySettled<T>(
   result: PromiseSettledResult<T>,
   setValue: (value: T) => void
@@ -63,7 +60,6 @@ export function useWeatherData(stationId?: number): WeatherData {
   const [station, setStation] = useState<StationMeta | null>(null);
   const [current, setCurrent] = useState<CurrentObservation | null>(null);
   const [forecast, setForecast] = useState<ForecastDay[]>([]);
-  const [hourly, setHourly] = useState<HourlyForecast[]>([]);
   const [status, setStatus] = useState<StationStatus | null>(null);
   const [almanac, setAlmanac] = useState<StationAlmanac | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -77,40 +73,48 @@ export function useWeatherData(stationId?: number): WeatherData {
   // later one (UI B-MEDIUM).
   const abortRef = useRef<AbortController | null>(null);
 
+  // Tracks which controller was created by the most recent loadData call
+  // specifically (unlike abortRef, pollCurrent never writes to this one).
+  // Used below to tell "superseded by a poll tick" (which doesn't manage
+  // isLoading, so this run must still clear it) apart from "superseded by a
+  // newer loadData/refresh call" (which owns isLoading now, so this run must
+  // NOT clear it out from under it).
+  const loadOwnerRef = useRef<AbortController | null>(null);
+
   const loadData = useCallback(async () => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    loadOwnerRef.current = controller;
     const { signal } = controller;
 
     setIsLoading(true);
 
-    const [stationResult, obsResult, forecastResult, hourlyResult, statusResult, almanacResult] =
+    const [stationResult, obsResult, forecastResult, statusResult, almanacResult] =
       await Promise.allSettled([
         fetchStationMeta(stationId, signal),
         fetchCurrentObservation(stationId, signal),
         fetchForecast(stationId, signal),
-        fetchHourlyForecast(stationId, signal),
         fetchStationStatus(stationId, signal),
         fetchStationAlmanac(stationId, signal),
       ]);
 
-    // Whether or not this run was superseded, it is over -- clear the
-    // loading flag unconditionally so a poll tick that aborts a still-
-    // in-flight initial load can never leave the spinner stuck forever (the
-    // fetches would otherwise settle-as-rejected from the abort with
-    // nothing left to clear it, since pollCurrent doesn't manage isLoading).
-    setIsLoading(false);
+    // Clear the loading flag only if no newer loadData/refresh call has
+    // superseded this one. A poll tick aborting a still-in-flight initial
+    // load does NOT touch loadOwnerRef (only loadData does), so that case
+    // still clears isLoading as before; a newer loadData call does, so this
+    // (now-superseded) run leaves isLoading alone for the newer run to clear.
+    if (loadOwnerRef.current === controller) {
+      setIsLoading(false);
+    }
 
     // This run was superseded by a newer loadData/poll call (which aborted
-    // it) -- its DATA results are stale, so drop them (isLoading above still
-    // needed clearing either way) instead of overwriting state the newer
-    // call already wrote.
+    // it) -- its DATA results are stale, so drop them instead of overwriting
+    // state the newer call already wrote.
     if (signal.aborted) return;
 
     applySettled(stationResult, setStation);
     applySettled(forecastResult, setForecast);
-    applySettled(hourlyResult, setHourly);
     applySettled(statusResult, setStatus);
     applySettled(almanacResult, setAlmanac);
 
@@ -168,7 +172,6 @@ export function useWeatherData(stationId?: number): WeatherData {
     station,
     current,
     forecast,
-    hourly,
     status,
     almanac,
     isLoading,

@@ -5,6 +5,11 @@ interface HeaderProps {
   station: StationMeta | null;
   status: StationStatus | null;
   lastUpdated: Date | null;
+  // True when the core observation's last refresh attempt failed and the
+  // data shown is held over from an earlier successful fetch (§14 P1.6).
+  // Optional so existing callers/tests that don't care about staleness
+  // don't need to pass it; treated as "not stale" when omitted.
+  isStale?: boolean;
   onSettingsClick: () => void;
 }
 
@@ -12,7 +17,7 @@ function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export function Header({ station, status, lastUpdated, onSettingsClick }: HeaderProps) {
+export function Header({ station, status, lastUpdated, isStale, onSettingsClick }: HeaderProps) {
   return (
     <header className="app-header">
       <div className="header-left">
@@ -39,8 +44,16 @@ export function Header({ station, status, lastUpdated, onSettingsClick }: Header
           </div>
         )}
         {lastUpdated && (
-          <span className="last-updated">
+          <span
+            className={`last-updated${isStale ? ' stale' : ''}`}
+            title={isStale ? 'Live data unavailable; showing the last successful update' : undefined}
+          >
             Updated {formatTime(lastUpdated)}
+            {isStale && (
+              <span className="stale-badge" role="status">
+                Stale
+              </span>
+            )}
           </span>
         )}
         <button className="settings-btn" onClick={onSettingsClick} aria-label="Settings">
