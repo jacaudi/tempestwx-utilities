@@ -21,7 +21,7 @@ import {
 // the UI reasonably fresh against the station's own ~1-minute report
 // cadence without hammering the read path; not derived from anything
 // authoritative, just a reasonable middle ground.
-const POLL_INTERVAL_MS = 30_000;
+export const POLL_INTERVAL_MS = 30_000;
 
 export interface WeatherData {
   station: StationMeta | null;
@@ -95,9 +95,17 @@ export function useWeatherData(stationId?: number): WeatherData {
         fetchStationAlmanac(stationId, signal),
       ]);
 
+    // Whether or not this run was superseded, it is over -- clear the
+    // loading flag unconditionally so a poll tick that aborts a still-
+    // in-flight initial load can never leave the spinner stuck forever (the
+    // fetches would otherwise settle-as-rejected from the abort with
+    // nothing left to clear it, since pollCurrent doesn't manage isLoading).
+    setIsLoading(false);
+
     // This run was superseded by a newer loadData/poll call (which aborted
-    // it) -- its results are stale, so drop them instead of overwriting
-    // state the newer call already wrote.
+    // it) -- its DATA results are stale, so drop them (isLoading above still
+    // needed clearing either way) instead of overwriting state the newer
+    // call already wrote.
     if (signal.aborted) return;
 
     applySettled(stationResult, setStation);
@@ -120,8 +128,6 @@ export function useWeatherData(stationId?: number): WeatherData {
       setIsStale(true);
       setError(describeError(obsResult));
     }
-
-    setIsLoading(false);
   }, [stationId]);
 
   // Lightweight poll: refetches only the core observation, not the

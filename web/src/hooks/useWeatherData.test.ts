@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
-import { useWeatherData } from './useWeatherData';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { useWeatherData, POLL_INTERVAL_MS } from './useWeatherData';
 import * as api from '../api/tempestApi';
 import { PrecipitationType, PressureTrend } from '../types/weather';
 import type {
@@ -122,5 +122,59 @@ describe('useWeatherData', () => {
     expect(result.current.isStale).toBe(false);
     expect(result.current.error).toBeNull();
     expect(result.current.station).toBeNull();
+  });
+});
+
+describe('useWeatherData - isLoading with polling', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('clears isLoading when the poll interval aborts a still-in-flight initial load', async () => {
+    // The initial fetchCurrentObservation call never resolves on its own --
+    // it only settles (rejects, mirroring real fetch's abort behavior) once
+    // its AbortSignal fires, simulating a hung/slow request. The second
+    // call (issued by the poll tick) resolves immediately.
+    let obsCallCount = 0;
+    mockedApi.fetchCurrentObservation.mockImplementation(
+      (_stationId?: number, signal?: AbortSignal) => {
+        obsCallCount += 1;
+        if (obsCallCount === 1) {
+          return new Promise<CurrentObservation>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => {
+              const err = new Error('Aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          });
+        }
+        return Promise.resolve(baseObs);
+      }
+    );
+    mockedApi.fetchStationMeta.mockResolvedValue(baseStation);
+    mockedApi.fetchForecast.mockResolvedValue([]);
+    mockedApi.fetchHourlyForecast.mockResolvedValue([]);
+    mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
+    mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+
+    const { result } = renderHook(() => useWeatherData());
+
+    expect(result.current.isLoading).toBe(true);
+
+    // Advance past one poll tick: pollCurrent aborts the still-in-flight
+    // initial loadData (its fetchCurrentObservation call rejects with
+    // AbortError) and issues its own fetchCurrentObservation call, which
+    // resolves.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+
+    expect(result.current.current).toEqual(baseObs);
+    expect(result.current.isLoading).toBe(false);
   });
 });
