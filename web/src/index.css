@@ -33,7 +33,7 @@
   --danger-color: #ff5252;
   --info-color: #40c4ff;
 
-  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Inter Variable', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   font-weight: 400;
   line-height: 1.5;
   color: var(--text-primary);

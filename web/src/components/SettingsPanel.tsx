@@ -96,35 +96,6 @@ export function SettingsPanel({ isOpen, prefs, onPrefsChange, onClose }: Setting
             ))}
           </div>
         </div>
-
-        <div className="settings-section">
-          <h3>API Configuration</h3>
-          <div className="setting-row">
-            <label>Station ID</label>
-            <input
-              type="text"
-              className="glass-input"
-              placeholder="e.g. 12345"
-              defaultValue=""
-            />
-          </div>
-          <div className="setting-row">
-            <label>API Token</label>
-            <input
-              type="password"
-              className="glass-input"
-              placeholder="Personal Access Token"
-              defaultValue=""
-            />
-          </div>
-          <p className="settings-hint">
-            Get your token at{' '}
-            <a href="https://tempestwx.com" target="_blank" rel="noopener noreferrer">
-              tempestwx.com
-            </a>{' '}
-            → Settings → Data Authorizations
-          </p>
-        </div>
       </div>
     </div>
   );
