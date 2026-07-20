@@ -38,6 +38,8 @@ type PrometheusWriter struct {
 
 // NewPrometheusWriter creates a new Prometheus writer.
 func NewPrometheusWriter(pushURL, jobName string) *PrometheusWriter {
+	warnDeprecated()
+
 	outbox := make(chan prometheus.Metric, 1000)
 	more := make(chan bool, 1)
 
