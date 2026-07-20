@@ -1,4 +1,5 @@
 import type { StationMeta, StationStatus } from '../types/weather';
+import { formatCoord } from './formatCoord';
 
 interface HeaderProps {
   station: StationMeta | null;
@@ -25,7 +26,7 @@ export function Header({ station, status, lastUpdated, onSettingsClick }: Header
         </h1>
         {station && (
           <span className="station-location">
-            {station.latitude.toFixed(4)}°N, {Math.abs(station.longitude).toFixed(4)}°W
+            {formatCoord(station.latitude, station.longitude)}
             &middot; {station.elevation}m
           </span>
         )}

@@ -13,9 +13,8 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 
-function getDayName(dayNum: number, monthNum: number): string {
-  const now = new Date();
-  const date = new Date(now.getFullYear(), monthNum - 1, dayNum);
+function getDayName(sunriseEpoch: number): string {
+  const date = new Date(sunriseEpoch * 1000);
   return DAY_NAMES[date.getDay()];
 }
 
@@ -35,7 +34,7 @@ export function ForecastStrip({ forecast, unit }: ForecastStripProps) {
         {forecast.map((day, i) => (
           <div key={i} className={`forecast-day ${i === 0 ? 'forecast-today' : ''}`}>
             <span className="forecast-day-name">
-              {i === 0 ? 'Today' : getDayName(day.dayNum, day.monthNum)}
+              {i === 0 ? 'Today' : getDayName(day.sunrise)}
             </span>
             <span className="forecast-date">
               {MONTH_NAMES[day.monthNum - 1]} {day.dayNum}
