@@ -518,6 +518,49 @@ func TestReader_LatestObservation(t *testing.T) {
 	})
 }
 
+// TestReader_LatestObservationAny proves LatestObservationAny returns the
+// newest row across ALL serials (no WHERE serial_number clause) -- the
+// single-station appliance's /api/observations/current has no serial to
+// scope by, so it needs the newest row overall, not per-serial -- and the
+// same sentinel error as LatestObservation when the table is empty.
+func TestReader_LatestObservationAny(t *testing.T) {
+	t.Run("returns_newest_across_serials", func(t *testing.T) {
+		w := newTestWriter(t)
+		ctx := t.Context()
+
+		// Two different serials; the newest row overall belongs to the
+		// second serial, not the first -- proves no serial-scoping happens.
+		if err := w.WriteReport(ctx, obsReport("ST-A", 1700000100, 10)); err != nil {
+			t.Fatalf("WriteReport: %v", err)
+		}
+		if err := w.WriteReport(ctx, obsReport("ST-B", 1700000200, 20)); err != nil {
+			t.Fatalf("WriteReport: %v", err)
+		}
+		if err := w.Flush(ctx); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+
+		got, err := w.LatestObservationAny(ctx)
+		if err != nil {
+			t.Fatalf("LatestObservationAny: %v", err)
+		}
+		if got.SerialNumber != "ST-B" {
+			t.Errorf("SerialNumber = %q, want ST-B (the newest row overall)", got.SerialNumber)
+		}
+		if got.Timestamp != 1700000200 {
+			t.Errorf("Timestamp = %d, want 1700000200", got.Timestamp)
+		}
+	})
+
+	t.Run("no_rows_returns_sentinel", func(t *testing.T) {
+		w := newTestWriter(t)
+		_, err := w.LatestObservationAny(t.Context())
+		if !errors.Is(err, ErrObservationNotFound) {
+			t.Fatalf("err = %v, want ErrObservationNotFound", err)
+		}
+	})
+}
+
 // TestReader_HistoryPoints proves HistoryPoints returns in-range points
 // ordered by timestamp for an allowlisted field, and rejects an unknown or
 // SQL-injection-shaped field before any query executes.

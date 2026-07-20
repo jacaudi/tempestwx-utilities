@@ -41,6 +41,11 @@ type Deps struct {
 	// StaticFS serves the embedded UI build (web.DistFS() in production; an
 	// in-memory fstest.MapFS in tests, so tests never need a real UI build).
 	StaticFS fs.FS
+
+	// Observations backs GET /api/observations/current and .../history
+	// (Task 1.4). Production passes a *sqlite.Writer (which satisfies
+	// ObservationReader); tests pass a fake.
+	Observations ObservationReader
 }
 
 // New builds the HTTP server: the embedded UI with SPA fallback, security
@@ -50,6 +55,7 @@ type Deps struct {
 func New(deps Deps) *http.Server {
 	mux := http.NewServeMux()
 	registerHealthz(mux)
+	registerObservations(mux, deps)
 	registerStatic(mux, deps)
 
 	return &http.Server{
