@@ -1,11 +1,18 @@
 /**
- * Tempest WeatherFlow API client
+ * Tempest data client -- Contract C (design §11).
  *
- * REST API base: https://swd.weatherflow.com/swd/rest
- * WebSocket: wss://ws.weatherflow.com/swd/data
- *
- * All methods currently return stub data.
- * Replace with real fetch calls when connecting to the live API.
+ * Every fetch below hits this server's own tokenless, same-origin JSON API
+ * (never WeatherFlow directly; the browser never holds a token). Two
+ * reliability tiers:
+ *   - fetchCurrentObservation is the core: GET /api/observations/current
+ *     reads this station's own SQLite store and works in UDP mode with no
+ *     TOKEN configured.
+ *   - fetchStationMeta/fetchForecast/fetchHourlyForecast/fetchStationAlmanac
+ *     are best-effort passthrough proxies to WeatherFlow (GET /api/station,
+ *     /api/forecast, /api/almanac). They require a server-held TOKEN this
+ *     appliance may not have, and the proxy forwards WeatherFlow's response
+ *     shape unchanged -- it may not match this file's declared return types.
+ *     Callers (useWeatherData) are expected to tolerate these failing.
  */
 
 import type {
@@ -16,173 +23,119 @@ import type {
   StationStatus,
   StationAlmanac,
 } from '../types/weather';
-import {
-  stubCurrentObservation,
-  stubStationMeta,
-  stubForecast,
-  stubHourlyForecast,
-  stubStationStatus,
-  stubStationAlmanac,
-} from './stubData';
 
-const API_BASE = 'https://swd.weatherflow.com/swd/rest';
+// Single-sourced so the endpoint path used by a fetch* function and the one
+// asserted in tests/read in useWeatherData can never drift apart -- an
+// external contract (Contract C's URL shape), Tier A DRY.
+const ENDPOINTS = {
+  current: '/api/observations/current',
+  station: '/api/station',
+  forecast: '/api/forecast',
+  almanac: '/api/almanac',
+} as const;
 
-/**
- * In production, the token is obtained via:
- * 1. Personal Access Token (Settings → Data Authorizations → Create Token at tempestwx.com)
- * 2. OAuth flow for third-party apps
- */
-let _apiToken: string | null = null;
+// A report older than this is treated as "station offline" by
+// fetchStationStatus's derivation below -- several multiples of the
+// station's typical ~1-minute report cadence, enough to absorb a couple of
+// missed/delayed reports without flapping. No authoritative source; a
+// judgment call, same spirit as observations.go's pressureTrendWindow.
+const STATION_ONLINE_THRESHOLD_SECONDS = 5 * 60;
 
-export function setApiToken(token: string) {
-  _apiToken = token;
-}
-
-export function getApiToken(): string | null {
-  return _apiToken;
+// The "fetch, reject non-OK, parse JSON" sequence is identical for every
+// endpoint below -- shared knowledge (how a Contract C response is read),
+// not just shared shape, so it is written once here.
+async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, { signal });
+  if (!res.ok) {
+    throw new Error(`${url} responded with ${res.status}`);
+  }
+  return (await res.json()) as T;
 }
 
 // ---------------------------------------------------------------------------
-// Station metadata
-// GET /stations?token={token}
+// Station metadata -- best-effort WeatherFlow proxy (GET /api/station).
 // ---------------------------------------------------------------------------
 export async function fetchStationMeta(
-  _stationId?: number
+  _stationId?: number,
+  signal?: AbortSignal
 ): Promise<StationMeta> {
-  // TODO: Replace with real API call
-  // const res = await fetch(`${API_BASE}/stations?token=${_apiToken}`);
-  // const data = await res.json();
-  // return parseStationMeta(data);
-  void _stationId;
-  void API_BASE;
-  return Promise.resolve({ ...stubStationMeta });
+  return getJSON<StationMeta>(ENDPOINTS.station, signal);
 }
 
 // ---------------------------------------------------------------------------
-// Current observations
-// GET /observations/stn/{station_id}?token={token}
+// Current observation -- the core, real endpoint (GET /api/observations/current).
 // ---------------------------------------------------------------------------
 export async function fetchCurrentObservation(
-  _stationId?: number
+  _stationId?: number,
+  signal?: AbortSignal
 ): Promise<CurrentObservation> {
-  // TODO: Replace with real API call
-  // const res = await fetch(
-  //   `${API_BASE}/observations/stn/${stationId}?token=${_apiToken}`
-  // );
-  // const data = await res.json();
-  // return parseObservation(data.obs[0]);
-  void _stationId;
-  return Promise.resolve({
-    ...stubCurrentObservation,
-    timestamp: Date.now() / 1000,
-  });
+  return getJSON<CurrentObservation>(ENDPOINTS.current, signal);
 }
 
 // ---------------------------------------------------------------------------
-// Forecast
-// GET /better_forecast?station_id={station_id}&token={token}
+// Forecast -- best-effort WeatherFlow proxy (GET /api/forecast).
 // ---------------------------------------------------------------------------
 export async function fetchForecast(
-  _stationId?: number
+  _stationId?: number,
+  signal?: AbortSignal
 ): Promise<ForecastDay[]> {
-  // TODO: Replace with real API call
-  // const res = await fetch(
-  //   `${API_BASE}/better_forecast?station_id=${stationId}&token=${_apiToken}`
-  // );
-  // const data = await res.json();
-  // return parseForecast(data.forecast.daily);
-  void _stationId;
-  return Promise.resolve([...stubForecast]);
+  return getJSON<ForecastDay[]>(ENDPOINTS.forecast, signal);
 }
 
 // ---------------------------------------------------------------------------
-// Hourly forecast
-// GET /better_forecast?station_id={station_id}&token={token}
-// (parsed from the hourly portion of the same response)
+// Hourly forecast -- same upstream response as fetchForecast (design §11:
+// almanac/forecast are both better_forecast passthroughs); parsed from the
+// hourly portion server-side is out of scope here (raw passthrough).
 // ---------------------------------------------------------------------------
 export async function fetchHourlyForecast(
-  _stationId?: number
+  _stationId?: number,
+  signal?: AbortSignal
 ): Promise<HourlyForecast[]> {
-  void _stationId;
-  return Promise.resolve([...stubHourlyForecast]);
+  return getJSON<HourlyForecast[]>(ENDPOINTS.forecast, signal);
 }
 
 // ---------------------------------------------------------------------------
-// Station status / health
-// GET /observations/device/{device_id}?token={token}
+// Station status / health -- Contract C has no dedicated status endpoint
+// (design §11), so this derives a best-effort StationStatus from the latest
+// CurrentObservation rather than inventing a server route out of scope for
+// this task. signalStrength and firmwareVersion have no source in Contract
+// C and fall back to a safe default (0 / empty string). Any failure --
+// including the underlying fetch failing or being aborted -- degrades to a
+// safe "unknown/offline" default rather than throwing, since this is a
+// supplementary card, not the core data path.
 // ---------------------------------------------------------------------------
 export async function fetchStationStatus(
-  _deviceId?: number
+  _deviceId?: number,
+  signal?: AbortSignal
 ): Promise<StationStatus> {
-  void _deviceId;
-  return Promise.resolve({
-    ...stubStationStatus,
-    lastReport: Date.now() / 1000 - 45,
-  });
+  try {
+    const obs = await fetchCurrentObservation(undefined, signal);
+    const ageSeconds = Date.now() / 1000 - obs.timestamp;
+    return {
+      isOnline: ageSeconds <= STATION_ONLINE_THRESHOLD_SECONDS,
+      lastReport: obs.timestamp,
+      batteryLevel: obs.battery,
+      signalStrength: 0,
+      firmwareVersion: '',
+    };
+  } catch {
+    return {
+      isOnline: false,
+      lastReport: 0,
+      batteryLevel: 0,
+      signalStrength: 0,
+      firmwareVersion: '',
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Station almanac (historical highs/lows)
-// GET /observations/stn/{station_id}?token={token}&bucket=day|week|month|year
+// Station almanac (historical highs/lows) -- best-effort WeatherFlow proxy
+// (GET /api/almanac).
 // ---------------------------------------------------------------------------
 export async function fetchStationAlmanac(
-  _stationId?: number
+  _stationId?: number,
+  signal?: AbortSignal
 ): Promise<StationAlmanac> {
-  void _stationId;
-  return Promise.resolve({ ...stubStationAlmanac });
+  return getJSON<StationAlmanac>(ENDPOINTS.almanac, signal);
 }
-
-// ---------------------------------------------------------------------------
-// WebSocket connection for real-time data
-// wss://ws.weatherflow.com/swd/data?token={token}
-// ---------------------------------------------------------------------------
-export function connectWebSocket(
-  _deviceId: number,
-  _onObservation: (obs: CurrentObservation) => void
-): { close: () => void } {
-  // TODO: Implement real WebSocket connection
-  // const ws = new WebSocket(`wss://ws.weatherflow.com/swd/data?token=${_apiToken}`);
-  // ws.onopen = () => {
-  //   ws.send(JSON.stringify({
-  //     type: 'listen_start',
-  //     device_id: deviceId,
-  //     id: 'tempest-display',
-  //   }));
-  // };
-  // ws.onmessage = (event) => {
-  //   const msg = JSON.parse(event.data);
-  //   if (msg.type === 'obs_st') {
-  //     onObservation(parseObservation(msg.obs[0]));
-  //   }
-  // };
-  // return { close: () => ws.close() };
-
-  // Stub: simulate real-time updates every 3 seconds (matching Tempest WebSocket cadence)
-  let windDir = stubCurrentObservation.windDirection;
-  let windAvg = stubCurrentObservation.windAvg;
-  let windGust = stubCurrentObservation.windGust;
-  let windLull = stubCurrentObservation.windLull;
-
-  const interval = setInterval(() => {
-    const jitter = (val: number, step: number, min = 0, max = Infinity) =>
-      Math.min(max, Math.max(min, val + (Math.random() - 0.5) * step));
-
-    // Wind direction drifts slowly, ±5° per tick
-    windDir = (windDir + (Math.random() - 0.5) * 10 + 360) % 360;
-    windAvg = jitter(windAvg, 0.4, 0, 20);
-    windGust = jitter(windGust, 0.6, windAvg, 30);
-    windLull = jitter(windLull, 0.3, 0, windAvg);
-
-    _onObservation({
-      ...stubCurrentObservation,
-      timestamp: Date.now() / 1000,
-      windAvg,
-      windGust,
-      windLull,
-      windDirection: Math.round(windDir),
-    });
-  }, 3000);
-
-  return { close: () => clearInterval(interval) };
-}
-
