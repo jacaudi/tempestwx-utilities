@@ -9,6 +9,7 @@ const prefs: UserPreferences = {
   pressureUnit: 'inHg',
   rainUnit: 'in',
   theme: 'liquid-glass',
+  recordsWindowDays: 7,
 };
 
 describe('SettingsPanel', () => {

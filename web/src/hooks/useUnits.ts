@@ -13,6 +13,7 @@ const DEFAULT_PREFS: UserPreferences = {
   pressureUnit: 'mb',
   rainUnit: 'in',
   theme: 'nord',
+  recordsWindowDays: 7,
 };
 
 function loadPrefs(): UserPreferences {

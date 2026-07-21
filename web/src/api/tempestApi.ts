@@ -21,6 +21,8 @@ import type {
   ForecastDay,
   StationStatus,
   StationAlmanac,
+  RecordsSummary,
+  RecordsWindowDays,
 } from '../types/weather';
 
 // Single-sourced so the endpoint path used by a fetch* function and the one
@@ -31,6 +33,7 @@ const ENDPOINTS = {
   station: '/api/station',
   forecast: '/api/forecast',
   almanac: '/api/almanac',
+  summary: '/api/observations/summary',
 } as const;
 
 // A report older than this is treated as "station offline" by
@@ -116,4 +119,15 @@ export async function fetchStationAlmanac(
   signal?: AbortSignal
 ): Promise<StationAlmanac> {
   return getJSON<StationAlmanac>(ENDPOINTS.almanac, signal);
+}
+
+// ---------------------------------------------------------------------------
+// Records summary -- the core, real endpoint
+// (GET /api/observations/summary?days=N).
+// ---------------------------------------------------------------------------
+export async function fetchRecordsSummary(
+  days: RecordsWindowDays,
+  signal?: AbortSignal
+): Promise<RecordsSummary> {
+  return getJSON<RecordsSummary>(`${ENDPOINTS.summary}?days=${days}`, signal);
 }

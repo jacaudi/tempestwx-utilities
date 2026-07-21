@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { fetchCurrentObservation, fetchStationStatus } from './tempestApi';
+import { fetchCurrentObservation, fetchStationStatus, fetchRecordsSummary } from './tempestApi';
 import tempestApiSource from './tempestApi.ts?raw';
 import { PrecipitationType, PressureTrend } from '../types/weather';
-import type { CurrentObservation } from '../types/weather';
+import type { CurrentObservation, RecordsSummary } from '../types/weather';
 
 const mockObservation: CurrentObservation = {
   timestamp: 1700000000,
@@ -105,6 +105,59 @@ describe('fetchStationStatus', () => {
     expect(result.isOnline).toBe(true);
     expect(result.lastReport).toBe(freshObservation.timestamp);
     expect(result.batteryLevel).toBe(mockObservation.battery);
+  });
+});
+
+describe('fetchRecordsSummary', () => {
+  const mockSummary: RecordsSummary = {
+    window: { days: 7, from: 1699999000, to: 1700000000 },
+    count: 42,
+    coveredFrom: 1699999100,
+    coveredTo: 1700000000,
+    temperature: { max: 22.1, min: 8.4 },
+    humidity: { max: 95, min: 30 },
+    pressure: { max: 1020.5, min: 1005.2 },
+    windMax: 12.3,
+    gustMax: 18.9,
+    rainTotal: 4.2,
+    lightningTotal: 0,
+  };
+
+  it('GETs the days-windowed Contract C endpoint and returns a typed RecordsSummary', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(mockSummary),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchRecordsSummary(7);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/observations/summary?days=7');
+    expect(init?.signal).toBeUndefined();
+    expect(result).toEqual(mockSummary);
+  });
+
+  it('forwards an AbortSignal to fetch', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(mockSummary),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+
+    await fetchRecordsSummary(7, controller.signal);
+
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+
+  it('throws on a non-OK response instead of returning stub/garbage data', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }));
+
+    await expect(fetchRecordsSummary(7)).rejects.toThrow();
   });
 });
 

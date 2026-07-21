@@ -120,7 +120,33 @@ export interface UserPreferences {
   pressureUnit: PressureUnit;
   rainUnit: RainUnit;
   theme: string;
+  recordsWindowDays: RecordsWindowDays;
 }
 
 export type ThemeName = 'liquid-glass' | 'midnight-aurora' | 'desert-sunset' | 'nord' | 'tokyo-night' | 'catppuccin-mocha' | 'the-grid';
+
+// Records summary window -- Contract C (GET /api/observations/summary?days=N).
+// RecordsSummary mirrors the Go summaryResponse wire tags exactly (field-for-field,
+// same casing); kept distinct from StationAlmanac/TempRecord, which describe a
+// different (WeatherFlow-proxied) almanac shape.
+export type RecordsWindowDays = 7 | 30 | 180 | 365;
+
+export interface RecordsMinMax {
+  max: number | null;
+  min: number | null;
+}
+
+export interface RecordsSummary {
+  window: { days: RecordsWindowDays; from: number; to: number };
+  count: number;
+  coveredFrom: number | null;
+  coveredTo: number | null;
+  temperature: RecordsMinMax; // °C (SI)
+  humidity: RecordsMinMax;    // %
+  pressure: RecordsMinMax;    // mb (SI)
+  windMax: number | null;     // m/s (SI)
+  gustMax: number | null;     // m/s (SI)
+  rainTotal: number | null;   // mm (SI)
+  lightningTotal: number | null;
+}
 
