@@ -10,6 +10,7 @@ import { HumidityCard } from './components/HumidityCard';
 import { SolarUVCard } from './components/SolarUVCard';
 import { RainCard } from './components/RainCard';
 import { LightningCard } from './components/LightningCard';
+import { RecordsCard } from './components/RecordsCard';
 import { ForecastStrip } from './components/ForecastStrip';
 import { StationHealth } from './components/StationHealth';
 import { AlmanacCard } from './components/AlmanacCard';
@@ -21,7 +22,7 @@ import './App.css';
 
 function App() {
   const { prefs, setPrefs } = useUnits();
-  const { station, current, forecast, status, almanac, isLoading, error, lastUpdated, isStale, refresh } =
+  const { station, current, forecast, status, almanac, isLoading, error, lastUpdated, isStale, refresh, summary } =
     useWeatherData(undefined, prefs.recordsWindowDays);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -80,6 +81,7 @@ function App() {
             <RainCard current={current} unit={prefs.rainUnit} />
             <LightningCard current={current} />
             {status && <StationHealth status={status} />}
+            <RecordsCard summary={summary} prefs={prefs} />
             <ForecastStrip forecast={forecast} unit={prefs.temperatureUnit} />
             {almanac && <AlmanacCard almanac={almanac} unit={prefs.temperatureUnit} />}
             {station && (
