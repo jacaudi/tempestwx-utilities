@@ -925,3 +925,58 @@ func (w *Writer) HistoryPoints(ctx context.Context, field string, from, to int64
 	}
 	return points, nil
 }
+
+// Summary is the windowed aggregate over tempest_observations in [from, to].
+// Every aggregate is nullable: MIN/MAX/SUM over zero rows (or an all-NULL
+// column) return SQL NULL, not 0, so each is scanned into a sql.Null* rather
+// than silently reporting a misleading zero value. Count == 0 is the
+// authoritative empty-window signal -- callers must check it before reading
+// any other field.
+type Summary struct {
+	Count          int64
+	CoveredFrom    sql.NullInt64
+	CoveredTo      sql.NullInt64
+	TempMax        sql.NullFloat64
+	TempMin        sql.NullFloat64
+	HumidityMax    sql.NullFloat64
+	HumidityMin    sql.NullFloat64
+	PressureMax    sql.NullFloat64
+	PressureMin    sql.NullFloat64
+	WindMax        sql.NullFloat64
+	GustMax        sql.NullFloat64
+	RainTotal      sql.NullFloat64
+	LightningTotal sql.NullInt64
+}
+
+const summarizeObservationsSQL = `
+	SELECT
+	  COUNT(*),
+	  MIN(timestamp), MAX(timestamp),
+	  MAX(temp_air),  MIN(temp_air),
+	  MAX(humidity),  MIN(humidity),
+	  MAX(pressure),  MIN(pressure),
+	  MAX(wind_avg),  MAX(wind_gust),
+	  SUM(rain_rate),                 -- rain_rate = obs_st[12], per-interval mm accumulation -> SUM = total mm
+	  SUM(lightning_strike_count)
+	FROM tempest_observations
+	WHERE timestamp BETWEEN ? AND ?
+`
+
+// SummarizeObservations aggregates the tempest_observations rows in [from,
+// to] into one Summary. Aggregates over 0 rows (or all-NULL columns) are SQL
+// NULL, surfaced via sql.Null*; Count == 0 signals an empty window. Runs on
+// the read-only handle (w.readDB) so a wide scan never queues behind the
+// single ingest writer connection.
+func (w *Writer) SummarizeObservations(ctx context.Context, from, to int64) (Summary, error) {
+	var s Summary
+	err := w.readDB.QueryRowContext(ctx, summarizeObservationsSQL, from, to).Scan(
+		&s.Count, &s.CoveredFrom, &s.CoveredTo,
+		&s.TempMax, &s.TempMin, &s.HumidityMax, &s.HumidityMin,
+		&s.PressureMax, &s.PressureMin, &s.WindMax, &s.GustMax,
+		&s.RainTotal, &s.LightningTotal,
+	)
+	if err != nil {
+		return Summary{}, fmt.Errorf("summarize observations: %w", err)
+	}
+	return s, nil
+}
