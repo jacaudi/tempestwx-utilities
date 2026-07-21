@@ -54,6 +54,48 @@ func assertPragmaInt(t *testing.T, db *sql.DB, pragma string, want int) {
 	}
 }
 
+func TestOpenReadOnly_ReadsWriterData(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.db")
+	cfg := Config{BusyTimeout: 5000 * time.Millisecond, BatchSize: 1, FlushInterval: time.Second}
+
+	wdb, err := Open(ctx, path, cfg) // runs migrations, creates WAL
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := wdb.Close(); err != nil {
+			t.Errorf("close write handle: %v", err)
+		}
+	})
+
+	// seed one observation row directly
+	_, err = wdb.ExecContext(ctx, `INSERT INTO tempest_observations
+		(id, serial_number, timestamp, temp_air) VALUES ('a','ST-1',100,21.5)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rdb, err := OpenReadOnly(ctx, path, cfg)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := rdb.Close(); err != nil {
+			t.Errorf("close read handle: %v", err)
+		}
+	})
+
+	var got float64
+	if err := rdb.QueryRowContext(ctx, `SELECT temp_air FROM tempest_observations WHERE id='a'`).Scan(&got); err != nil {
+		t.Fatalf("read via read-only handle: %v", err)
+	}
+	if got != 21.5 {
+		t.Fatalf("got %v want 21.5", got)
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	getenv := func(k string) string {
 		return map[string]string{
