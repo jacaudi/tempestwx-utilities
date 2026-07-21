@@ -41,6 +41,9 @@ services:
     network_mode: host
     volumes:
       - tempest-data:/data
+    depends_on:
+      tempest-data-init:
+        condition: service_completed_successfully
     environment:
       ENABLE_OTEL: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: localhost:4317 # see host-networking note above
@@ -57,6 +60,20 @@ services:
       TOKEN: ${TOKEN:-}
       TEMPEST_SERIAL: ${TEMPEST_SERIAL:-}
     restart: unless-stopped
+
+  # One-shot init: the app image runs as non-root USER 65532:65532 (see
+  # Dockerfile), but a fresh named volume mounts /data owned root:root 0755 —
+  # nothing in the base image seeds ownership for it. SQLite is the default
+  # store and the app exits on startup if it can't open /data/tempest.db, so
+  # without this chown a fresh `docker compose up` crash-loops `tempestwx`.
+  # litestream runs as root and can read the resulting 65532-owned DB fine,
+  # so only `tempestwx` needs to wait on this.
+  tempest-data-init:
+    image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+    command: ["sh", "-c", "chown -R 65532:65532 /data"]
+    volumes:
+      - tempest-data:/data
+    restart: "no"
 
   litestream:
     image: litestream/litestream:0.3.13@sha256:027eda2a89a86015b9797d2129d4dd447e8953097b4190e1d5a30b73e76d8d58
