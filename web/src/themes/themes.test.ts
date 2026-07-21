@@ -24,7 +24,10 @@ describe('applyTheme (P2.15 — theme-var leak)', () => {
     );
   });
 
-  it('removes a synthetic prior var value the incoming theme does not redefine', () => {
+  it('overwrites a leaked value when the incoming theme redefines the var', () => {
+    // A stale value for a var the incoming theme DOES define is corrected by
+    // the setProperty pass (the removeProperty pass never fires for it, since
+    // every current theme defines the full var set).
     document.documentElement.style.setProperty('--text-shadow', 'LEAKED');
 
     applyTheme('desert-sunset');
@@ -33,6 +36,17 @@ describe('applyTheme (P2.15 — theme-var leak)', () => {
       themes['desert-sunset'].vars['--text-shadow']
     );
     expect(document.documentElement.style.getPropertyValue('--text-shadow')).not.toBe('LEAKED');
+  });
+
+  it('clears only theme-owned vars, leaving unrelated inline custom properties intact', () => {
+    // The leak-clearing pass must scope its removeProperty calls to the union
+    // of theme vars — it must NOT nuke arbitrary inline custom properties set
+    // by other code. (This exercises the removeProperty pass's key guard.)
+    document.documentElement.style.setProperty('--not-a-theme-var', 'KEEP');
+
+    applyTheme('nord');
+
+    expect(document.documentElement.style.getPropertyValue('--not-a-theme-var')).toBe('KEEP');
   });
 
   it('every theme defines --text-shadow', () => {
