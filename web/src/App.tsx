@@ -20,9 +20,9 @@ import type { ThemeName } from './types/weather';
 import './App.css';
 
 function App() {
-  const { station, current, forecast, status, almanac, isLoading, error, lastUpdated, isStale, refresh } =
-    useWeatherData();
   const { prefs, setPrefs } = useUnits();
+  const { station, current, forecast, status, almanac, isLoading, error, lastUpdated, isStale, refresh } =
+    useWeatherData(undefined, prefs.recordsWindowDays);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
