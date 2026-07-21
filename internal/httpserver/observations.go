@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -51,6 +52,9 @@ type ObservationReader interface {
 	// HistoryPoints returns the allowlisted field's samples in [from, to];
 	// an unknown field is rejected with a non-nil error before any query runs.
 	HistoryPoints(ctx context.Context, field string, from, to int64) ([]sqlite.Point, error)
+	// SummarizeObservations returns the windowed min/max/total aggregates
+	// over [from, to] backing GET /api/observations/summary.
+	SummarizeObservations(ctx context.Context, from, to int64) (sqlite.Summary, error)
 }
 
 // currentObservation is the wire shape for GET /api/observations/current.
@@ -92,6 +96,69 @@ type historyResponse struct {
 	Points []sqlite.Point `json:"points"`
 }
 
+// summaryMinMax is a min/max pair shared by every summaryResponse field that
+// has both. A nil pointer means the underlying SQL aggregate returned NULL
+// (no rows had that column set in-window), not zero.
+type summaryMinMax struct {
+	Max *float64 `json:"max"`
+	Min *float64 `json:"min"`
+}
+
+// summaryWindow echoes the requested window back to the caller, so the UI
+// doesn't need to independently recompute from/to from days.
+type summaryWindow struct {
+	Days int   `json:"days"`
+	From int64 `json:"from"`
+	To   int64 `json:"to"`
+}
+
+// summaryResponse is the wire shape for GET /api/observations/summary:
+// Contract C (design §11), pinned to web/src/types/weather.ts's
+// RecordsSummary interface (Task 4) -- every field there must have a
+// same-named counterpart here. Backend emits SI units unchanged.
+type summaryResponse struct {
+	Window         summaryWindow `json:"window"`
+	Count          int64         `json:"count"`
+	CoveredFrom    *int64        `json:"coveredFrom"`
+	CoveredTo      *int64        `json:"coveredTo"`
+	Temperature    summaryMinMax `json:"temperature"`
+	Humidity       summaryMinMax `json:"humidity"`
+	Pressure       summaryMinMax `json:"pressure"`
+	WindMax        *float64      `json:"windMax"`
+	GustMax        *float64      `json:"gustMax"`
+	RainTotal      *float64      `json:"rainTotal"`
+	LightningTotal *int64        `json:"lightningTotal"`
+}
+
+// summaryQueryTimeout bounds handleSummary's SummarizeObservations call so a
+// slow full-table aggregate scan can't hold the request open indefinitely.
+const summaryQueryTimeout = 5 * time.Second
+
+// allowedSummaryDays is the exact set of windows the UI's Records card
+// offers; unlike /history's from/to (which default rather than reject),
+// there's no sensible fallback for a window the UI never asks for, so
+// anything else 400s rather than silently coercing to a nearby value.
+var allowedSummaryDays = map[int]bool{7: true, 30: true, 180: true, 365: true}
+
+// f64 maps a nullable SQL float to its wire form: nil means the aggregate's
+// underlying column was NULL for every row in-window, not zero.
+func f64(n sql.NullFloat64) *float64 {
+	if n.Valid {
+		v := n.Float64
+		return &v
+	}
+	return nil
+}
+
+// i64 is f64's sql.NullInt64 counterpart.
+func i64(n sql.NullInt64) *int64 {
+	if n.Valid {
+		v := n.Int64
+		return &v
+	}
+	return nil
+}
+
 // registerObservations registers the Contract C JSON API handlers reading
 // SQLite. Additive per the Deps seam server.go documents: a new field
 // (Observations) plus this one register call, siblings (registerHealthz,
@@ -102,6 +169,9 @@ func registerObservations(mux *http.ServeMux, deps Deps) {
 	})
 	mux.HandleFunc("GET /api/observations/history", func(w http.ResponseWriter, r *http.Request) {
 		handleHistory(w, r, deps.Observations)
+	})
+	mux.HandleFunc("GET /api/observations/summary", func(w http.ResponseWriter, r *http.Request) {
+		handleSummary(w, r, deps.Observations)
 	})
 }
 
@@ -164,6 +234,51 @@ func handleHistory(w http.ResponseWriter, r *http.Request, reader ObservationRea
 	}
 
 	writeJSON(w, http.StatusOK, historyResponse{Points: points})
+}
+
+// handleSummary serves the windowed observation aggregates (Contract C's
+// RecordsSummary) for a days query param drawn from allowedSummaryDays --
+// deliberately stricter than handleHistory's from/to (which default on a bad
+// value), since there is no sensible fallback for a window the UI never
+// offers.
+func handleSummary(w http.ResponseWriter, r *http.Request, reader ObservationReader) {
+	if reader == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "observation store not configured")
+		return
+	}
+
+	days, err := strconv.Atoi(r.URL.Query().Get("days"))
+	if err != nil || !allowedSummaryDays[days] {
+		writeJSONError(w, http.StatusBadRequest, "days must be one of 7, 30, 180, 365")
+		return
+	}
+
+	to := time.Now().Unix()
+	from := to - int64(days)*86400
+
+	ctx, cancel := context.WithTimeout(r.Context(), summaryQueryTimeout)
+	defer cancel()
+
+	s, err := reader.SummarizeObservations(ctx, from, to)
+	if err != nil {
+		slog.ErrorContext(ctx, "httpserver: summarize observations", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to load records summary")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, summaryResponse{
+		Window:         summaryWindow{Days: days, From: from, To: to},
+		Count:          s.Count,
+		CoveredFrom:    i64(s.CoveredFrom),
+		CoveredTo:      i64(s.CoveredTo),
+		Temperature:    summaryMinMax{Max: f64(s.TempMax), Min: f64(s.TempMin)},
+		Humidity:       summaryMinMax{Max: f64(s.HumidityMax), Min: f64(s.HumidityMin)},
+		Pressure:       summaryMinMax{Max: f64(s.PressureMax), Min: f64(s.PressureMin)},
+		WindMax:        f64(s.WindMax),
+		GustMax:        f64(s.GustMax),
+		RainTotal:      f64(s.RainTotal),
+		LightningTotal: i64(s.LightningTotal),
+	})
 }
 
 // parseEpochOrDefault parses s as a base-10 unix-epoch-seconds integer,
