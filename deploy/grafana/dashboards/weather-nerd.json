@@ -1,0 +1,425 @@
+{
+  "uid": "tempest-weather-nerd",
+  "title": "Weather Nerd",
+  "tags": ["tempest", "weather"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "serial",
+        "type": "query",
+        "label": "Station",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "tempest-prometheus"
+        },
+        "query": "label_values(tempest_temperature_c, serial)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Current conditions",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 101,
+      "type": "stat",
+      "title": "Temperature",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 3, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_temperature_c{kind=\"air\", serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 102,
+      "type": "stat",
+      "title": "Dew Point",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 3, "x": 3, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_dewpoint_c{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 103,
+      "type": "stat",
+      "title": "Heat Index",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 3, "x": 6, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_heat_index_c{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 104,
+      "type": "stat",
+      "title": "Wet Bulb",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 3, "x": 9, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_wetbulb_c{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 105,
+      "type": "stat",
+      "title": "Humidity",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_humidity_percent{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 106,
+      "type": "stat",
+      "title": "Pressure",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "pressurembar" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_pressure_mb{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 107,
+      "type": "stat",
+      "title": "Wind (avg / gust)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "velocityms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_wind_meters_per_second{kind=\"avg\", serial=\"$serial\"}", "legendFormat": "avg" },
+        { "refId": "B", "expr": "tempest_wind_meters_per_second{kind=\"gust\", serial=\"$serial\"}", "legendFormat": "gust" }
+      ]
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Trends (24h)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "panels": []
+    },
+    {
+      "id": 201,
+      "type": "timeseries",
+      "title": "Temperature vs Dew Point vs Wet Bulb",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_temperature_c{kind=\"air\", serial=\"$serial\"}", "legendFormat": "temperature" },
+        { "refId": "B", "expr": "tempest_dewpoint_c{serial=\"$serial\"}", "legendFormat": "dew point" },
+        { "refId": "C", "expr": "tempest_wetbulb_c{serial=\"$serial\"}", "legendFormat": "wet bulb" }
+      ]
+    },
+    {
+      "id": 202,
+      "type": "timeseries",
+      "title": "Pressure Tendency",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "pressurembar" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_pressure_mb{serial=\"$serial\"}", "legendFormat": "pressure" },
+        { "refId": "B", "expr": "deriv(tempest_pressure_mb{serial=\"$serial\"}[3h]) * 10800", "legendFormat": "tendency (mb/3h)" }
+      ]
+    },
+    {
+      "id": 203,
+      "type": "timeseries",
+      "title": "Humidity Trend",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_humidity_percent{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "Wind",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "panels": []
+    },
+    {
+      "id": 301,
+      "type": "heatmap",
+      "title": "Wind Rose (direction vs speed)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "targets": [
+        { "refId": "A", "expr": "tempest_wind_direction_degrees{serial=\"$serial\"}", "legendFormat": "direction" },
+        { "refId": "B", "expr": "tempest_wind_meters_per_second{kind=\"avg\", serial=\"$serial\"}", "legendFormat": "speed" }
+      ]
+    },
+    {
+      "id": 302,
+      "type": "timeseries",
+      "title": "Gust Factor",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_wind_meters_per_second{kind=\"gust\", serial=\"$serial\"} / ignoring(kind) tempest_wind_meters_per_second{kind=\"avg\", serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "Rain",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "panels": []
+    },
+    {
+      "id": 401,
+      "type": "timeseries",
+      "title": "Rain Rate",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "velocitymms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_rain_rate_mm_min{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 402,
+      "type": "timeseries",
+      "title": "Rain Accumulation (24h)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "lengthmm" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "increase(tempest_rainfall_mm_total{serial=\"$serial\"}[24h])" }
+      ]
+    },
+    {
+      "id": 500,
+      "type": "row",
+      "title": "Lightning",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "panels": []
+    },
+    {
+      "id": 501,
+      "type": "timeseries",
+      "title": "Strike Rate (1h)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "increase(tempest_lightning_strike_count_total{serial=\"$serial\"}[1h])" }
+      ]
+    },
+    {
+      "id": 502,
+      "type": "stat",
+      "title": "Nearest Strike Distance (1h)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "fieldConfig": { "defaults": { "unit": "lengthkm" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "min_over_time(tempest_lightning_distance_km{serial=\"$serial\"}[1h])" }
+      ]
+    },
+    {
+      "id": 600,
+      "type": "row",
+      "title": "Solar / UV",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "panels": []
+    },
+    {
+      "id": 601,
+      "type": "stat",
+      "title": "UV Index",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 42 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_uv_index{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 602,
+      "type": "stat",
+      "title": "Solar Irradiance",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 42 },
+      "fieldConfig": { "defaults": { "unit": "watt" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_irradiance_w_m2{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 603,
+      "type": "stat",
+      "title": "Illuminance",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 42 },
+      "fieldConfig": { "defaults": { "unit": "lux" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_illuminance_lux{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 700,
+      "type": "row",
+      "title": "Station health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 46 },
+      "panels": []
+    },
+    {
+      "id": 701,
+      "type": "stat",
+      "title": "Battery",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 47 },
+      "fieldConfig": { "defaults": { "unit": "volt" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_battery_volts{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 702,
+      "type": "stat",
+      "title": "RSSI",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 47 },
+      "fieldConfig": { "defaults": { "unit": "dBm" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_rssi_dbm{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 703,
+      "type": "stat",
+      "title": "Uptime",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 47 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "tempest_uptime_seconds{serial=\"$serial\"}" }
+      ]
+    },
+    {
+      "id": 704,
+      "type": "stat",
+      "title": "Reboots (24h)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 47 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "increase(tempest_reboots_total{serial=\"$serial\"}[24h])" }
+      ]
+    },
+    {
+      "id": 705,
+      "type": "stat",
+      "title": "Bus Errors (24h)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 47 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "increase(tempest_bus_errors_total{serial=\"$serial\"}[24h])" }
+      ]
+    },
+    {
+      "id": 800,
+      "type": "row",
+      "title": "Records / Almanac",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 },
+      "panels": []
+    },
+    {
+      "id": 801,
+      "type": "stat",
+      "title": "High Temp ($__range)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max_over_time(tempest_temperature_c{kind=\"air\", serial=\"$serial\"}[$__range])" }
+      ]
+    },
+    {
+      "id": 802,
+      "type": "stat",
+      "title": "Low Temp ($__range)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "min_over_time(tempest_temperature_c{kind=\"air\", serial=\"$serial\"}[$__range])" }
+      ]
+    },
+    {
+      "id": 803,
+      "type": "stat",
+      "title": "Peak Gust ($__range)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "velocityms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max_over_time(tempest_wind_meters_per_second{kind=\"gust\", serial=\"$serial\"}[$__range])" }
+      ]
+    },
+    {
+      "id": 804,
+      "type": "stat",
+      "title": "Max UV ($__range)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max_over_time(tempest_uv_index{serial=\"$serial\"}[$__range])" }
+      ]
+    },
+    {
+      "id": 805,
+      "type": "stat",
+      "title": "Total Rain ($__range)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "lengthmm" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "increase(tempest_rainfall_mm_total{serial=\"$serial\"}[$__range])" }
+      ]
+    },
+    {
+      "id": 806,
+      "type": "stat",
+      "title": "Closest Lightning ($__range)",
+      "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "lengthkm" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "min_over_time(tempest_lightning_distance_km{serial=\"$serial\"}[$__range])" }
+      ]
+    }
+  ]
+}
