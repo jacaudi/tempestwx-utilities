@@ -360,6 +360,20 @@ func TestHandleSummary_BadDays(t *testing.T) {
 	}
 }
 
+// TestHandleSummary_ReaderError proves GET /api/observations/summary 500s
+// (with the ErrorContext log path exercised) when SummarizeObservations
+// returns an error, e.g. a query timeout or a sqlite failure -- the one
+// branch of handleSummary's error handling left uncovered.
+func TestHandleSummary_ReaderError(t *testing.T) {
+	reader := &fakeObservationReader{summaryErr: errors.New("boom")}
+	req := httptest.NewRequest(http.MethodGet, "/api/observations/summary?days=7", nil)
+	rec := httptest.NewRecorder()
+	New(testDepsWithObservations(reader)).Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /api/observations/summary?days=7 = %d, want 500", rec.Code)
+	}
+}
+
 // TestHandleSummary_NilReader proves the summary handler 503s (not panics)
 // when Deps.Observations is nil, matching the other two observation
 // handlers' nil-guard pattern (see TestAPI_ObservationsNilStore).
