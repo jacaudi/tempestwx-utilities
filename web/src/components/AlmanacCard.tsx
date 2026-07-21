@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { StationAlmanac, TemperatureUnit } from '../types/weather';
 import { formatTemp } from '../hooks/useUnits';
 import { GlassCard } from './GlassCard';
@@ -94,13 +95,13 @@ function daylightDuration(sunrise: number, sunset: number): string {
 }
 
 /* ---- Main card ---- */
-export function AlmanacCard({ almanac, unit }: AlmanacCardProps) {
+function AlmanacCardImpl({ almanac, unit }: AlmanacCardProps) {
   return (
     <GlassCard span={3}>
       <div className="card-header">
         {/* Book / almanac icon */}
         <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
           <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
         </svg>
@@ -175,3 +176,5 @@ export function AlmanacCard({ almanac, unit }: AlmanacCardProps) {
     </GlassCard>
   );
 }
+
+export const AlmanacCard = memo(AlmanacCardImpl);

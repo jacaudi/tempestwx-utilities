@@ -6,6 +6,7 @@
 .app {
   position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 0 0 2rem;
 }
 
@@ -70,7 +71,7 @@
   border: 1px solid var(--border-color);
   border-radius: var(--card-radius);
   padding: 1.25rem;
-  transition: all 0.3s ease;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
   overflow: hidden;
   text-shadow: var(--text-shadow);
 }
@@ -233,7 +234,7 @@
   background: var(--bg-secondary);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
   backdrop-filter: blur(10px);
 }
 
@@ -734,7 +735,7 @@
 @keyframes rainfall {
   0% { transform: translateY(-10px); opacity: 0; }
   20% { opacity: 0.4; }
-  100% { transform: translateY(calc(100vh)); opacity: 0; }
+  100% { transform: translateY(calc(100dvh)); opacity: 0; }
 }
 
 /* --- Lightning card ------------------------------------------ */
@@ -1199,6 +1200,7 @@
   justify-content: center;
   gap: 1.5rem;
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 2rem;
   text-align: center;
   color: var(--text-secondary);
@@ -1225,6 +1227,7 @@
   justify-content: center;
   gap: 1rem;
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 2rem;
   text-align: center;
   color: var(--text-primary);
@@ -1255,7 +1258,7 @@
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
 }
 
 .glass-btn:hover {

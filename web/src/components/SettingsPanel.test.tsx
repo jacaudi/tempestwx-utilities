@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { SettingsPanel } from './SettingsPanel';
 import type { UserPreferences } from '../types/weather';
 
@@ -40,5 +40,92 @@ describe('SettingsPanel', () => {
     expect(screen.getByText('Temperature')).toBeInTheDocument();
     expect(screen.getByText('°F')).toBeInTheDocument();
     expect(screen.getByText('Theme')).toBeInTheDocument();
+  });
+});
+
+describe('SettingsPanel dialog semantics (P2.14)', () => {
+  it('exposes role="dialog", aria-modal="true", and an accessible name from the h2', () => {
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAccessibleName('Settings');
+  });
+
+  it('calls onClose when Escape is pressed', () => {
+    const onClose = vi.fn();
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={onClose} />
+    );
+
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves focus into the dialog on open', () => {
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it('restores focus to the previously focused element when the dialog closes', () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    const { rerender } = render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+    expect(document.activeElement).not.toBe(trigger);
+
+    rerender(
+      <SettingsPanel isOpen={false} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+    expect(document.activeElement).toBe(trigger);
+
+    trigger.remove();
+  });
+
+  it('traps Tab: pressing Tab on the last focusable element wraps focus to the first', () => {
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    last.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('traps Shift+Tab: pressing Shift+Tab on the first focusable element wraps focus to the last', () => {
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    first.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+
+    expect(document.activeElement).toBe(last);
   });
 });

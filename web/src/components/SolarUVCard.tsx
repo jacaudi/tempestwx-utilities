@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { CurrentObservation } from '../types/weather';
 import { GlassCard } from './GlassCard';
 import { formatX } from '../utils/format';
@@ -30,13 +31,13 @@ function solarIntensity(radiation: number): string {
   return 'Very High';
 }
 
-export function SolarUVCard({ current }: SolarUVCardProps) {
+function SolarUVCardImpl({ current }: SolarUVCardProps) {
   const uvPct = Math.min(100, (current.uvIndex / 11) * 100);
 
   return (
     <GlassCard className="solar-uv-card">
       <div className="card-header">
-        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="5" />
           <line x1="12" y1="1" x2="12" y2="3" />
           <line x1="12" y1="21" x2="12" y2="23" />
@@ -88,3 +89,5 @@ export function SolarUVCard({ current }: SolarUVCardProps) {
     </GlassCard>
   );
 }
+
+export const SolarUVCard = memo(SolarUVCardImpl);

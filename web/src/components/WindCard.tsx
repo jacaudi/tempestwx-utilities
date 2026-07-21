@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { memo, useState, useEffect, useRef } from 'react';
 import type { CurrentObservation, WindUnit } from '../types/weather';
 import { formatWind } from '../hooks/useUnits';
 import { GlassCard } from './GlassCard';
@@ -14,7 +14,7 @@ function degToCompass(deg: number): string {
   return dirs[Math.round(deg / 22.5) % 16];
 }
 
-export function WindCard({ current, unit }: WindCardProps) {
+function WindCardImpl({ current, unit }: WindCardProps) {
   const compassDir = degToCompass(current.windDirection);
 
   // Track accumulated rotation so the needle always takes the shortest arc
@@ -33,7 +33,7 @@ export function WindCard({ current, unit }: WindCardProps) {
   return (
     <GlassCard className="wind-card">
       <div className="card-header">
-        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2" />
         </svg>
         <span className="card-title">Wind</span>
@@ -71,3 +71,5 @@ export function WindCard({ current, unit }: WindCardProps) {
     </GlassCard>
   );
 }
+
+export const WindCard = memo(WindCardImpl);

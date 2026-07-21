@@ -260,7 +260,7 @@ export function RadarCard({ station, site }: RadarCardProps) {
 function RadarCardHeader() {
   return (
     <div className="card-header">
-      <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="2" />
         <path d="M12 2a10 10 0 0 1 10 10" />
         <path d="M12 6a6 6 0 0 1 6 6" />

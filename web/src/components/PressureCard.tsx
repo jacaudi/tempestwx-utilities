@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { CurrentObservation, PressureUnit } from '../types/weather';
 import { formatPressure } from '../hooks/useUnits';
 import { PressureTrend } from '../types/weather';
@@ -24,11 +25,11 @@ function trendLabel(trend: PressureTrend): string {
   }
 }
 
-export function PressureCard({ current, unit }: PressureCardProps) {
+function PressureCardImpl({ current, unit }: PressureCardProps) {
   return (
     <GlassCard className="pressure-card">
       <div className="card-header">
-        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="10" />
           <path d="M12 6v6l4 2" />
         </svg>
@@ -58,3 +59,5 @@ export function PressureCard({ current, unit }: PressureCardProps) {
     </GlassCard>
   );
 }
+
+export const PressureCard = memo(PressureCardImpl);
