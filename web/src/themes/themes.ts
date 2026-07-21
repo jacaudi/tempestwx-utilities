@@ -250,9 +250,10 @@ export function applyTheme(name: ThemeName) {
 }
 
 export function getThemeList() {
-  return Object.values(themes).map(({ name, label, description }) => ({
+  return Object.values(themes).map(({ name, label, description, backgroundImage }) => ({
     name,
     label,
     description,
+    backgroundImage,
   }));
 }

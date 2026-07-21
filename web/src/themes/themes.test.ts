@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { applyTheme, themes } from './themes';
+import { applyTheme, themes, getThemeList } from './themes';
 
 afterEach(() => {
   // Reset any inline custom properties the tests apply, so themes.ts's
@@ -52,6 +52,17 @@ describe('applyTheme (P2.15 — theme-var leak)', () => {
   it('every theme defines --text-shadow', () => {
     for (const theme of Object.values(themes)) {
       expect(theme.vars['--text-shadow']).toBeTruthy();
+    }
+  });
+});
+
+describe('getThemeList (§14 — theme-swatch backgroundImage wiring)', () => {
+  it('includes a truthy backgroundImage for every entry, matching the source theme', () => {
+    const list = getThemeList();
+    expect(list.length).toBe(Object.keys(themes).length);
+    for (const entry of list) {
+      expect(entry.backgroundImage).toBeTruthy();
+      expect(entry.backgroundImage).toBe(themes[entry.name].backgroundImage);
     }
   });
 });

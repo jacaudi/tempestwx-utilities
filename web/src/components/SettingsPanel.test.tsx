@@ -41,6 +41,18 @@ describe('SettingsPanel', () => {
     expect(screen.getByText('°F')).toBeInTheDocument();
     expect(screen.getByText('Theme')).toBeInTheDocument();
   });
+
+  it('renders each theme swatch with a non-empty inline background-image (§14)', () => {
+    const { container } = render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+
+    const swatches = container.querySelectorAll<HTMLElement>('.theme-swatch');
+    expect(swatches.length).toBeGreaterThan(0);
+    swatches.forEach((swatch) => {
+      expect(swatch.style.backgroundImage).not.toBe('');
+    });
+  });
 });
 
 describe('SettingsPanel dialog semantics (P2.14)', () => {

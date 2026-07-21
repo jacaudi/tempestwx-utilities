@@ -141,7 +141,11 @@ export function SettingsPanel({ isOpen, prefs, onPrefsChange, onClose }: Setting
                 className={`theme-option ${prefs.theme === t.name ? 'active' : ''}`}
                 onClick={() => onPrefsChange({ theme: t.name })}
               >
-                <span className="theme-swatch" data-theme={t.name} />
+                <span
+                  className="theme-swatch"
+                  data-theme={t.name}
+                  style={{ backgroundImage: t.backgroundImage }}
+                />
                 <span className="theme-name">{t.label}</span>
                 <span className="theme-desc">{t.description}</span>
               </button>

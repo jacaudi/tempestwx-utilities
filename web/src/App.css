@@ -1267,6 +1267,201 @@
   transform: translateY(-1px);
 }
 
+/* --- Settings panel (modal overlay, toggle groups, theme grid) --- */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.settings-panel {
+  width: min(480px, 92vw);
+  max-height: 85dvh;
+  overflow-y: auto;
+  padding: 1.5rem;
+  backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+  box-shadow: 0 16px 48px var(--shadow-heavy);
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+
+.settings-header h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-shadow: var(--text-shadow);
+}
+
+.settings-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.settings-close:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.settings-close:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+}
+
+.settings-section {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.settings-section:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.settings-section h3 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  margin-bottom: 0.85rem;
+}
+
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+}
+
+.setting-row label {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.toggle-group {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.toggle-group button {
+  min-height: 36px;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.toggle-group button:first-child {
+  border-left: none;
+}
+
+.toggle-group button:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.toggle-group button:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: -2px;
+}
+
+.toggle-group button.active {
+  background: var(--accent-color);
+  color: var(--bg-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-glow);
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.theme-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.75rem;
+  text-align: left;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.theme-option:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-highlight);
+}
+
+.theme-option:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+}
+
+.theme-option.active {
+  border-color: var(--border-highlight);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.theme-swatch {
+  display: block;
+  width: 100%;
+  height: 40px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background-size: cover;
+}
+
+.theme-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.theme-desc {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 /* --- Radar card ------------------------------------------------ */
 .radar-card {
   min-height: 320px;
@@ -1301,6 +1496,20 @@
   .card-span-2,
   .card-span-3 {
     grid-column: span 1;
+  }
+
+  .settings-overlay {
+    padding: 0.75rem;
+    align-items: flex-end;
+  }
+
+  .settings-panel {
+    width: 100%;
+    max-height: 90dvh;
+  }
+
+  .theme-grid {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
 }
 
