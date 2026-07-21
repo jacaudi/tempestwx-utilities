@@ -56,6 +56,41 @@ describe('SettingsPanel', () => {
   });
 });
 
+describe('SettingsPanel Records window selector (Task 7)', () => {
+  it('renders a Records section with a Window row and the four window buttons', () => {
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+
+    expect(screen.getByText('Records')).toBeInTheDocument();
+    expect(screen.getByText('Window')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '7 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '30 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '180 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '365 days' })).toBeInTheDocument();
+  });
+
+  it('marks the button matching prefs.recordsWindowDays as active', () => {
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+
+    expect(screen.getByRole('button', { name: '7 days' })).toHaveClass('active');
+    expect(screen.getByRole('button', { name: '30 days' })).not.toHaveClass('active');
+  });
+
+  it('calls onPrefsChange with the selected window when a button is clicked', () => {
+    const onPrefsChange = vi.fn();
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={onPrefsChange} onClose={vi.fn()} />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '30 days' }));
+
+    expect(onPrefsChange).toHaveBeenCalledWith({ recordsWindowDays: 30 });
+  });
+});
+
 describe('SettingsPanel dialog semantics (P2.14)', () => {
   it('exposes role="dialog", aria-modal="true", and an accessible name from the h2', () => {
     render(
