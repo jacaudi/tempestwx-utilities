@@ -1,0 +1,32 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch: {}
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:9464"
+    # Pin translation explicitly (do not rely on the default): dots->underscores,
+    # monotonic counters get _total, unit suffixes appended -> reproduces the exact
+    # Contract B tempest_* names the WS4 dashboard PromQL depends on.
+    translation_strategy: "UnderscoreEscapingWithSuffixes"
+    # OFF: keep the resource attr tempest.serial OUT of metric labels (the app already
+    # sets a per-datapoint `serial` attribute -> label `serial`; enabling this would add
+    # a confusing near-duplicate label tempest_serial).
+    resource_to_telemetry_conversion:
+      enabled: false
+  debug:
+    verbosity: normal
+  # --- optional trace/log backends (O5) — commented examples only ---
+  # otlp/tempo: { endpoint: tempo:4317, tls: { insecure: true } }
+  # otlphttp/loki: { endpoint: http://loki:3100/otlp }
+
+service:
+  pipelines:
+    metrics: { receivers: [otlp], processors: [batch], exporters: [prometheus] }
+    traces:  { receivers: [otlp], processors: [batch], exporters: [debug] }   # swap to [debug, otlp/tempo] to store traces
+    logs:    { receivers: [otlp], processors: [batch], exporters: [debug] }   # swap to [debug, otlphttp/loki] to store logs
