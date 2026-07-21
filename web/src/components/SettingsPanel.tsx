@@ -46,11 +46,17 @@ export function SettingsPanel({ isOpen, prefs, onPrefsChange, onClose }: Setting
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    // The dialog container itself is focused on open (tabIndex={-1}), and is
+    // not part of the trap's focusable list. Treat "active element is the
+    // container, or isn't one of the trap's focusable elements at all" as a
+    // boundary too, so Shift+Tab from the just-opened dialog can't escape.
+    const atBoundary = active === dialog || !dialog.contains(active);
 
-    if (e.shiftKey && document.activeElement === first) {
+    if (e.shiftKey && (active === first || atBoundary)) {
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
+    } else if (!e.shiftKey && active === last) {
       e.preventDefault();
       first.focus();
     }

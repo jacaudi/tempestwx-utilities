@@ -140,4 +140,23 @@ describe('SettingsPanel dialog semantics (P2.14)', () => {
 
     expect(document.activeElement).toBe(last);
   });
+
+  it('traps Shift+Tab when focus is still on the dialog container itself (just-opened state)', () => {
+    render(
+      <SettingsPanel isOpen={true} prefs={prefs} onPrefsChange={vi.fn()} onClose={vi.fn()} />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const last = focusable[focusable.length - 1];
+
+    // On open, focus lands on the dialog container itself (not first/last).
+    expect(document.activeElement).toBe(dialog);
+
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+
+    expect(document.activeElement).toBe(last);
+  });
 });

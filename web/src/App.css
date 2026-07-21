@@ -735,7 +735,7 @@
 @keyframes rainfall {
   0% { transform: translateY(-10px); opacity: 0; }
   20% { opacity: 0.4; }
-  100% { transform: translateY(calc(100dvh)); opacity: 0; }
+  100% { transform: translateY(100vh); transform: translateY(100dvh); opacity: 0; }
 }
 
 /* --- Lightning card ------------------------------------------ */
@@ -1401,8 +1401,9 @@
 }
 
 .toggle-group button.active {
-  background: var(--accent-color);
-  color: var(--bg-primary);
+  background: var(--accent-glow);
+  color: var(--text-primary);
+  border-color: var(--accent-color);
   box-shadow: inset 0 0 0 1px var(--accent-glow);
 }
 

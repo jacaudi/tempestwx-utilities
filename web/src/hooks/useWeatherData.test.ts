@@ -256,4 +256,43 @@ describe('useWeatherData - isLoading with polling', () => {
     expect(result.current.isLoading).toBe(false);
     expect(result.current.current).toEqual(baseObs);
   });
+
+  it('keeps the current object reference stable across a poll that returns a new object with the same timestamp (§14 P2.13)', async () => {
+    // Two distinct object instances with an identical timestamp -- mirrors a
+    // poll tick that refetches the same underlying reading. The guard in
+    // pollCurrent's setCurrent should retain the prior reference instead of
+    // swapping in the new (but equivalent) object, so memoized current-
+    // consuming cards don't re-render for a no-op tick.
+    const firstObs: CurrentObservation = { ...baseObs };
+    const secondObs: CurrentObservation = { ...baseObs };
+    mockedApi.fetchCurrentObservation
+      .mockResolvedValueOnce(firstObs)
+      .mockResolvedValueOnce(secondObs);
+    mockedApi.fetchStationMeta.mockResolvedValue(baseStation);
+    mockedApi.fetchForecast.mockResolvedValue([]);
+    mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
+    mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+
+    const { result } = renderHook(() => useWeatherData());
+
+    // Flush the initial (non-poll) load's microtasks. Fake timers are active
+    // in this describe block, so `waitFor` would hang; flush directly instead
+    // (matching the sibling test above).
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.current).toBe(firstObs);
+    const refAfterInitialLoad = result.current.current;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+
+    expect(mockedApi.fetchCurrentObservation).toHaveBeenCalledTimes(2);
+    expect(result.current.current).toBe(refAfterInitialLoad);
+    expect(result.current.current).not.toBe(secondObs);
+  });
 });
