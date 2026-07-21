@@ -95,6 +95,11 @@ func TestPrometheusExporterEmitsContractBNames(t *testing.T) {
 	// comment names exactly this use ("a temporary assignment to LegacyValidation... to aid
 	// in debugging unforeseen results of the [UTF8Validation] change") — this test needs the
 	// legacy scheme to reproduce a production Collector's default translation.
+	// Production counterpart: DOC.1 (the OTel Collector config) must enable
+	// legacy/underscore naming for its prometheusexporter. This override only
+	// proves the instrument names are correct — it does not prove that a
+	// default-configured Collector would emit these underscored names on its
+	// own; that behavior is DOC.1's responsibility, not this test's.
 	prevScheme := model.NameValidationScheme
 	model.NameValidationScheme = model.LegacyValidation           //nolint:staticcheck // see above
 	t.Cleanup(func() { model.NameValidationScheme = prevScheme }) //nolint:staticcheck // see above
@@ -167,6 +172,10 @@ var oldNames = []string{
 // per-instrument by writer_test.go's "instance" absence checks — no need to
 // duplicate that assertion here.
 func TestMetricMigrationList(t *testing.T) {
+	// Count-only guard: catches an add/remove drift in metrics.go, but not a
+	// same-count rename. Acceptable here because metrics.go is the frozen
+	// legacy contract being replaced, not a list this test needs to track
+	// element-for-element going forward.
 	if len(oldNames) != len(tempest.All) {
 		t.Fatalf("oldNames has %d entries but tempest.All has %d — a descriptor was added/removed in metrics.go without updating this test's oldNames list", len(oldNames), len(tempest.All))
 	}
