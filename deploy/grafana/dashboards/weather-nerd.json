@@ -145,7 +145,7 @@
       "fieldConfig": { "defaults": { "unit": "pressurembar" }, "overrides": [] },
       "targets": [
         { "refId": "A", "expr": "tempest_pressure_mb{serial=\"$serial\"}", "legendFormat": "pressure" },
-        { "refId": "B", "expr": "deriv(tempest_pressure_mb{serial=\"$serial\"}[3h])", "legendFormat": "tendency (mb/3h)" }
+        { "refId": "B", "expr": "deriv(tempest_pressure_mb{serial=\"$serial\"}[3h]) * 10800", "legendFormat": "tendency (mb/3h)" }
       ]
     },
     {
@@ -185,7 +185,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
       "targets": [
-        { "refId": "A", "expr": "tempest_wind_meters_per_second{kind=\"gust\", serial=\"$serial\"} / tempest_wind_meters_per_second{kind=\"avg\", serial=\"$serial\"}" }
+        { "refId": "A", "expr": "tempest_wind_meters_per_second{kind=\"gust\", serial=\"$serial\"} / ignoring(kind) tempest_wind_meters_per_second{kind=\"avg\", serial=\"$serial\"}" }
       ]
     },
     {

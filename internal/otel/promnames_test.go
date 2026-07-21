@@ -142,7 +142,7 @@ func TestPrometheusExporterEmitsContractBNames(t *testing.T) {
 		}
 	}
 	// Negative guards: the OLD names must NOT appear (the intended breaks).
-	for _, old := range []string{"tempest_wind_ms", "tempest_uptime_seconds_total", "tempest_rainfall_total"} {
+	for _, old := range []string{"tempest_wind_ms", "tempest_uptime_seconds_total", "tempest_rainfall_total", "tempest_lightning_strike_count", "tempest_report_interval_minutes"} {
 		if got[old] {
 			t.Errorf("stale metric name %q still emitted", old)
 		}
