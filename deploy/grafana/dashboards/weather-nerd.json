@@ -168,13 +168,16 @@
     },
     {
       "id": 301,
-      "type": "heatmap",
+      "type": "operato-windrose-panel",
       "title": "Wind Rose (direction vs speed)",
       "datasource": { "type": "prometheus", "uid": "tempest-prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
       "targets": [
-        { "refId": "A", "expr": "tempest_wind_direction_degrees{serial=\"$serial\"}", "legendFormat": "direction" },
-        { "refId": "B", "expr": "tempest_wind_meters_per_second{kind=\"avg\", serial=\"$serial\"}", "legendFormat": "speed" }
+        { "refId": "A", "expr": "tempest_wind_direction_degrees{serial=\"$serial\"}", "legendFormat": "wind_direction" },
+        { "refId": "B", "expr": "tempest_wind_meters_per_second{kind=\"avg\", serial=\"$serial\"}", "legendFormat": "wind_speed" }
+      ],
+      "transformations": [
+        { "id": "joinByField", "options": { "byField": "time", "mode": "outer" } }
       ]
     },
     {

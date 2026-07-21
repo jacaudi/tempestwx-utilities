@@ -4,6 +4,7 @@ chainguard-labels.*
 CLAUDE.md
 .worktrees/
 .private-journal/
+deploy/.env
 
 # Binaries
 tempestwx-utilities
