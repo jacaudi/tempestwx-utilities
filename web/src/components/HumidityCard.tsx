@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { CurrentObservation, TemperatureUnit } from '../types/weather';
 import { formatTemp } from '../hooks/useUnits';
 import { GlassCard } from './GlassCard';
@@ -14,7 +15,7 @@ function humidityLevel(rh: number): string {
   return 'Very Humid';
 }
 
-export function HumidityCard({ current, tempUnit }: HumidityCardProps) {
+function HumidityCardImpl({ current, tempUnit }: HumidityCardProps) {
   const pct = current.relativeHumidity;
   const circumference = 2 * Math.PI * 40;
   const offset = circumference - (pct / 100) * circumference;
@@ -22,7 +23,7 @@ export function HumidityCard({ current, tempUnit }: HumidityCardProps) {
   return (
     <GlassCard className="humidity-card">
       <div className="card-header">
-        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
         </svg>
         <span className="card-title">Humidity</span>
@@ -60,3 +61,5 @@ export function HumidityCard({ current, tempUnit }: HumidityCardProps) {
     </GlassCard>
   );
 }
+
+export const HumidityCard = memo(HumidityCardImpl);

@@ -147,7 +147,11 @@ export function useWeatherData(stationId?: number): WeatherData {
     try {
       const obs = await fetchCurrentObservation(stationId, signal);
       if (signal.aborted) return;
-      setCurrent(obs);
+      // Reference-stability guard (§14 P2.13): an unchanged observation
+      // (same timestamp -- unique per reading, UNIQUE(serial,timestamp))
+      // keeps the same object reference so React.memo on the current-
+      // consuming cards can skip re-rendering on ticks with no new data.
+      setCurrent((prev) => (prev && prev.timestamp === obs.timestamp ? prev : obs));
       setIsStale(false);
       setError(null);
       setLastUpdated(new Date());

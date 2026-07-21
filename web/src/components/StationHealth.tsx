@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { StationStatus } from '../types/weather';
 import { GlassCard } from './GlassCard';
 
@@ -25,14 +26,14 @@ function timeSince(epochSeconds: number): string {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
-export function StationHealth({ status }: StationHealthProps) {
+function StationHealthImpl({ status }: StationHealthProps) {
   const battery = batteryLevel(status.batteryLevel);
   const bars = signalBars(status.signalStrength);
 
   return (
     <GlassCard className="station-health-card">
       <div className="card-header">
-        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <rect x="1" y="6" width="18" height="12" rx="2" ry="2" />
           <line x1="23" y1="10" x2="23" y2="14" />
         </svg>
@@ -86,3 +87,5 @@ export function StationHealth({ status }: StationHealthProps) {
     </GlassCard>
   );
 }
+
+export const StationHealth = memo(StationHealthImpl);

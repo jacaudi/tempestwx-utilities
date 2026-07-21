@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { CurrentObservation, TemperatureUnit } from '../types/weather';
 import { formatTemp } from '../hooks/useUnits';
 import { GlassCard } from './GlassCard';
@@ -29,7 +30,7 @@ function getConditionIcon(obs: CurrentObservation): string {
   return 'clear-night';
 }
 
-export function TemperatureHero({ current, unit, precipProbability }: TemperatureHeroProps) {
+function TemperatureHeroImpl({ current, unit, precipProbability }: TemperatureHeroProps) {
   const condition = getConditionLabel(current);
   const icon = getConditionIcon(current);
 
@@ -66,3 +67,5 @@ export function TemperatureHero({ current, unit, precipProbability }: Temperatur
     </GlassCard>
   );
 }
+
+export const TemperatureHero = memo(TemperatureHeroImpl);

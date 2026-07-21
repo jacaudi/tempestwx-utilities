@@ -84,6 +84,7 @@ export const themes: Record<ThemeName, ThemeDefinition> = {
       '--text-primary': '#fff0e6',
       '--text-secondary': 'rgba(255, 240, 230, 0.8)',
       '--text-muted': 'rgba(255, 240, 230, 0.5)',
+      '--text-shadow': '0 1px 3px rgba(0, 0, 0, 0.45)',
       '--accent-color': '#f7a072',
       '--accent-glow': 'rgba(247, 160, 114, 0.3)',
       '--shadow-color': 'rgba(0, 0, 0, 0.2)',
@@ -220,11 +221,27 @@ export const themes: Record<ThemeName, ThemeDefinition> = {
   },
 };
 
+// Union of every CSS custom property any theme defines, derived from
+// `themes` itself (not hand-listed) so a var added to one theme's `vars`
+// automatically becomes known here too (P2.15).
+const ALL_THEME_VAR_KEYS: ReadonlySet<string> = new Set(
+  Object.values(themes).flatMap((theme) => Object.keys(theme.vars))
+);
+
 export function applyTheme(name: ThemeName) {
   const theme = themes[name];
   if (!theme) return;
 
   const root = document.documentElement;
+
+  // Clear any theme-owned var the incoming theme doesn't define, so a
+  // property set by a previously-applied theme can't leak into this one.
+  ALL_THEME_VAR_KEYS.forEach((key) => {
+    if (!(key in theme.vars)) {
+      root.style.removeProperty(key);
+    }
+  });
+
   Object.entries(theme.vars).forEach(([key, value]) => {
     root.style.setProperty(key, value);
   });
@@ -233,9 +250,10 @@ export function applyTheme(name: ThemeName) {
 }
 
 export function getThemeList() {
-  return Object.values(themes).map(({ name, label, description }) => ({
+  return Object.values(themes).map(({ name, label, description, backgroundImage }) => ({
     name,
     label,
     description,
+    backgroundImage,
   }));
 }
