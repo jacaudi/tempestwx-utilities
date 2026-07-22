@@ -82,3 +82,27 @@ func Open(ctx context.Context, path string, cfg Config) (*sql.DB, error) {
 	}
 	return db, nil
 }
+
+// OpenReadOnly opens a read-only handle to an existing SQLite database for
+// query-side work (e.g. HTTP API reads). It must be opened AFTER Open, which
+// creates/migrates the database and its WAL files. WAL journaling lets these
+// read connections run concurrently with the single ingest writer without
+// SQLITE_BUSY. It deliberately does NOT set journal_mode — a read-only
+// connection cannot run that write PRAGMA, and the database is already WAL
+// from Open.
+func OpenReadOnly(ctx context.Context, path string, cfg Config) (*sql.DB, error) {
+	dsn := fmt.Sprintf(
+		"file:%s?mode=ro&_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)",
+		path, cfg.BusyTimeout.Milliseconds(),
+	)
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite read-only: %w", err)
+	}
+	db.SetMaxOpenConns(4) // concurrent readers alongside the single writer (WAL)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite read-only: %w", err)
+	}
+	return db, nil
+}

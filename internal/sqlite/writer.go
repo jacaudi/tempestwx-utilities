@@ -162,6 +162,13 @@ type flushRequest struct {
 type Writer struct {
 	db *sql.DB
 
+	// readDB serves the read methods (LatestObservation, LatestObservationAny,
+	// HistoryPoints). It defaults to db when WithReadDB is not supplied, so
+	// existing callers observe identical behavior. When set to a dedicated
+	// read-only handle (via WithReadDB), heavy query-side scans run
+	// concurrently with the single ingest writer instead of queuing behind it.
+	readDB *sql.DB
+
 	rows chan rowEnvelope
 
 	batchSize     int
@@ -187,20 +194,38 @@ type Writer struct {
 	shutdownCtx context.Context
 }
 
+// WriterOption configures a Writer at construction.
+type WriterOption func(*Writer)
+
+// WithReadDB routes read methods (LatestObservation, LatestObservationAny,
+// HistoryPoints) through a dedicated read-only handle instead of the single
+// write connection, so heavy reads never queue behind ingest. Pass a handle
+// opened via OpenReadOnly.
+func WithReadDB(db *sql.DB) WriterOption {
+	return func(w *Writer) { w.readDB = db }
+}
+
 // NewWriter starts the single writer goroutine and returns a Writer backed
 // by db (opened and migrated via Open). ctx bounds only the writer's normal
 // (non-shutdown) database operations; Close(ctx) supplies the live context
 // used for the final drain-and-flush. NewWriter does not take ownership of
 // db — db was created by the caller (via Open), and Close does not close it;
 // the caller remains responsible for db.Close() once every writer using it
-// has been closed.
-func NewWriter(ctx context.Context, db *sql.DB, cfg Config) *Writer {
+// has been closed. Without WithReadDB, read methods use db like before;
+// callers on a single connection keep identical behavior.
+func NewWriter(ctx context.Context, db *sql.DB, cfg Config, opts ...WriterOption) *Writer {
 	w := &Writer{
 		db:            db,
 		rows:          make(chan rowEnvelope, rowChanCap),
 		batchSize:     cfg.BatchSize,
 		flushInterval: cfg.FlushInterval,
 		done:          make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(w)
+	}
+	if w.readDB == nil {
+		w.readDB = db
 	}
 	w.wg.Add(1)
 	go w.run(ctx)
@@ -778,7 +803,7 @@ func scanObservation(row *sql.Row) (Observation, error) {
 // (ORDER BY timestamp DESC LIMIT 1). Returns ErrObservationNotFound,
 // checkable via errors.Is, when serial has no rows.
 func (w *Writer) LatestObservation(ctx context.Context, serial string) (Observation, error) {
-	row := w.db.QueryRowContext(ctx, selectLatestObservationSQL, serial)
+	row := w.readDB.QueryRowContext(ctx, selectLatestObservationSQL, serial)
 	obs, err := scanObservation(row)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -809,7 +834,7 @@ const selectLatestObservationAnySQL = `
 // registerObservations for how the API handler uses this. Returns
 // ErrObservationNotFound, checkable via errors.Is, when the table is empty.
 func (w *Writer) LatestObservationAny(ctx context.Context) (Observation, error) {
-	row := w.db.QueryRowContext(ctx, selectLatestObservationAnySQL)
+	row := w.readDB.QueryRowContext(ctx, selectLatestObservationAnySQL)
 	obs, err := scanObservation(row)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -871,7 +896,7 @@ func (w *Writer) HistoryPoints(ctx context.Context, field string, from, to int64
 		column, maxHistoryPoints,
 	)
 
-	rows, err := w.db.QueryContext(ctx, query, from, to)
+	rows, err := w.readDB.QueryContext(ctx, query, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query history points: %w", err)
 	}
@@ -899,4 +924,59 @@ func (w *Writer) HistoryPoints(ctx context.Context, field string, from, to int64
 		return nil, fmt.Errorf("iterate history points: %w", err)
 	}
 	return points, nil
+}
+
+// Summary is the windowed aggregate over tempest_observations in [from, to].
+// Every aggregate is nullable: MIN/MAX/SUM over zero rows (or an all-NULL
+// column) return SQL NULL, not 0, so each is scanned into a sql.Null* rather
+// than silently reporting a misleading zero value. Count == 0 is the
+// authoritative empty-window signal -- callers must check it before reading
+// any other field.
+type Summary struct {
+	Count          int64
+	CoveredFrom    sql.NullInt64
+	CoveredTo      sql.NullInt64
+	TempMax        sql.NullFloat64
+	TempMin        sql.NullFloat64
+	HumidityMax    sql.NullFloat64
+	HumidityMin    sql.NullFloat64
+	PressureMax    sql.NullFloat64
+	PressureMin    sql.NullFloat64
+	WindMax        sql.NullFloat64
+	GustMax        sql.NullFloat64
+	RainTotal      sql.NullFloat64
+	LightningTotal sql.NullInt64
+}
+
+const summarizeObservationsSQL = `
+	SELECT
+	  COUNT(*),
+	  MIN(timestamp), MAX(timestamp),
+	  MAX(temp_air),  MIN(temp_air),
+	  MAX(humidity),  MIN(humidity),
+	  MAX(pressure),  MIN(pressure),
+	  MAX(wind_avg),  MAX(wind_gust),
+	  SUM(rain_rate),                 -- rain_rate = obs_st[12], per-interval mm accumulation -> SUM = total mm
+	  SUM(lightning_strike_count)
+	FROM tempest_observations
+	WHERE timestamp BETWEEN ? AND ?
+`
+
+// SummarizeObservations aggregates the tempest_observations rows in [from,
+// to] into one Summary. Aggregates over 0 rows (or all-NULL columns) are SQL
+// NULL, surfaced via sql.Null*; Count == 0 signals an empty window. Runs on
+// the read-only handle (w.readDB) so a wide scan never queues behind the
+// single ingest writer connection.
+func (w *Writer) SummarizeObservations(ctx context.Context, from, to int64) (Summary, error) {
+	var s Summary
+	err := w.readDB.QueryRowContext(ctx, summarizeObservationsSQL, from, to).Scan(
+		&s.Count, &s.CoveredFrom, &s.CoveredTo,
+		&s.TempMax, &s.TempMin, &s.HumidityMax, &s.HumidityMin,
+		&s.PressureMax, &s.PressureMin, &s.WindMax, &s.GustMax,
+		&s.RainTotal, &s.LightningTotal,
+	)
+	if err != nil {
+		return Summary{}, fmt.Errorf("summarize observations: %w", err)
+	}
+	return s, nil
 }

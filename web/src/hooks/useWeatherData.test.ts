@@ -8,6 +8,8 @@ import type {
   StationMeta,
   StationStatus,
   StationAlmanac,
+  RecordsSummary,
+  RecordsWindowDays,
 } from '../types/weather';
 
 vi.mock('../api/tempestApi', () => ({
@@ -16,6 +18,7 @@ vi.mock('../api/tempestApi', () => ({
   fetchForecast: vi.fn(),
   fetchStationStatus: vi.fn(),
   fetchStationAlmanac: vi.fn(),
+  fetchRecordsSummary: vi.fn(),
 }));
 
 const baseObs: CurrentObservation = {
@@ -78,6 +81,20 @@ const baseAlmanac: StationAlmanac = {
   moonIllumination: 1,
 };
 
+const baseSummary: RecordsSummary = {
+  window: { days: 7, from: 1699999000, to: 1700000000 },
+  count: 100,
+  coveredFrom: 1699999000,
+  coveredTo: 1700000000,
+  temperature: { max: 20, min: 5 },
+  humidity: { max: 90, min: 30 },
+  pressure: { max: 1020, min: 1000 },
+  windMax: 10,
+  gustMax: 15,
+  rainTotal: 5,
+  lightningTotal: 2,
+};
+
 const mockedApi = vi.mocked(api);
 
 beforeEach(() => {
@@ -93,6 +110,7 @@ describe('useWeatherData', () => {
     mockedApi.fetchForecast.mockResolvedValue([]);
     mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
     mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+    mockedApi.fetchRecordsSummary.mockResolvedValue(baseSummary);
 
     const { result } = renderHook(() => useWeatherData());
 
@@ -112,6 +130,7 @@ describe('useWeatherData', () => {
     mockedApi.fetchForecast.mockRejectedValue(new Error('weatherflow down'));
     mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
     mockedApi.fetchStationAlmanac.mockRejectedValue(new Error('weatherflow down'));
+    mockedApi.fetchRecordsSummary.mockResolvedValue(baseSummary);
 
     const { result } = renderHook(() => useWeatherData());
 
@@ -129,6 +148,7 @@ describe('useWeatherData', () => {
       .mockResolvedValueOnce(baseStatus)
       .mockRejectedValueOnce(new Error('status endpoint down'));
     mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+    mockedApi.fetchRecordsSummary.mockResolvedValue(baseSummary);
 
     const { result } = renderHook(() => useWeatherData());
 
@@ -180,6 +200,7 @@ describe('useWeatherData - isLoading with polling', () => {
     mockedApi.fetchForecast.mockResolvedValue([]);
     mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
     mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+    mockedApi.fetchRecordsSummary.mockResolvedValue(baseSummary);
 
     const { result } = renderHook(() => useWeatherData());
 
@@ -226,6 +247,7 @@ describe('useWeatherData - isLoading with polling', () => {
     mockedApi.fetchForecast.mockResolvedValue([]);
     mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
     mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+    mockedApi.fetchRecordsSummary.mockResolvedValue(baseSummary);
 
     const { result } = renderHook(() => useWeatherData());
 
@@ -272,6 +294,7 @@ describe('useWeatherData - isLoading with polling', () => {
     mockedApi.fetchForecast.mockResolvedValue([]);
     mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
     mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+    mockedApi.fetchRecordsSummary.mockResolvedValue(baseSummary);
 
     const { result } = renderHook(() => useWeatherData());
 
@@ -294,5 +317,56 @@ describe('useWeatherData - isLoading with polling', () => {
     expect(mockedApi.fetchCurrentObservation).toHaveBeenCalledTimes(2);
     expect(result.current.current).toBe(refAfterInitialLoad);
     expect(result.current.current).not.toBe(secondObs);
+  });
+});
+
+describe('useWeatherData - records summary', () => {
+  const setupCoreMocks = () => {
+    mockedApi.fetchCurrentObservation.mockResolvedValue(baseObs);
+    mockedApi.fetchStationMeta.mockResolvedValue(baseStation);
+    mockedApi.fetchForecast.mockResolvedValue([]);
+    mockedApi.fetchStationStatus.mockResolvedValue(baseStatus);
+    mockedApi.fetchStationAlmanac.mockResolvedValue(baseAlmanac);
+  };
+
+  it('fetches the summary for the current window, exposes it, and re-fetches when the window pref changes', async () => {
+    setupCoreMocks();
+    const summary7: RecordsSummary = { ...baseSummary, window: { ...baseSummary.window, days: 7 } };
+    const summary30: RecordsSummary = { ...baseSummary, window: { ...baseSummary.window, days: 30 } };
+    mockedApi.fetchRecordsSummary
+      .mockResolvedValueOnce(summary7)
+      .mockResolvedValueOnce(summary30);
+
+    const { result, rerender } = renderHook(
+      ({ days }: { days: RecordsWindowDays }) => useWeatherData(undefined, days),
+      { initialProps: { days: 7 } }
+    );
+
+    await waitFor(() => expect(result.current.summary).toEqual(summary7));
+    expect(mockedApi.fetchRecordsSummary).toHaveBeenNthCalledWith(1, 7, expect.any(AbortSignal));
+
+    rerender({ days: 30 });
+
+    await waitFor(() => expect(result.current.summary).toEqual(summary30));
+    expect(mockedApi.fetchRecordsSummary).toHaveBeenNthCalledWith(2, 30, expect.any(AbortSignal));
+  });
+
+  it('retains the prior summary when a refetch after a window change fails (stale-retain)', async () => {
+    setupCoreMocks();
+    mockedApi.fetchRecordsSummary
+      .mockResolvedValueOnce(baseSummary)
+      .mockRejectedValueOnce(new Error('summary endpoint down'));
+
+    const { result, rerender } = renderHook(
+      ({ days }: { days: RecordsWindowDays }) => useWeatherData(undefined, days),
+      { initialProps: { days: 7 } }
+    );
+
+    await waitFor(() => expect(result.current.summary).toEqual(baseSummary));
+
+    rerender({ days: 30 });
+
+    await waitFor(() => expect(mockedApi.fetchRecordsSummary).toHaveBeenCalledTimes(2));
+    expect(result.current.summary).toEqual(baseSummary);
   });
 });

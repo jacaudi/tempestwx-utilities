@@ -5,6 +5,8 @@ import type {
   ForecastDay,
   StationStatus,
   StationAlmanac,
+  RecordsSummary,
+  RecordsWindowDays,
 } from '../types/weather';
 import {
   fetchCurrentObservation,
@@ -12,6 +14,7 @@ import {
   fetchForecast,
   fetchStationStatus,
   fetchStationAlmanac,
+  fetchRecordsSummary,
 } from '../api/tempestApi';
 
 // There is no WebSocket backend (Contract C is plain JSON, see design §11),
@@ -27,6 +30,7 @@ export interface WeatherData {
   forecast: ForecastDay[];
   status: StationStatus | null;
   almanac: StationAlmanac | null;
+  summary: RecordsSummary | null;
   isLoading: boolean;
   error: string | null;
   lastUpdated: Date | null;
@@ -56,12 +60,16 @@ function describeError(result: PromiseRejectedResult): string {
     : 'Failed to load weather data';
 }
 
-export function useWeatherData(stationId?: number): WeatherData {
+export function useWeatherData(
+  stationId?: number,
+  recordsWindowDays: RecordsWindowDays = 7
+): WeatherData {
   const [station, setStation] = useState<StationMeta | null>(null);
   const [current, setCurrent] = useState<CurrentObservation | null>(null);
   const [forecast, setForecast] = useState<ForecastDay[]>([]);
   const [status, setStatus] = useState<StationStatus | null>(null);
   const [almanac, setAlmanac] = useState<StationAlmanac | null>(null);
+  const [summary, setSummary] = useState<RecordsSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -172,12 +180,37 @@ export function useWeatherData(stationId?: number): WeatherData {
     return () => clearInterval(id);
   }, [pollCurrent]);
 
+  // Records summary is a separate, slow-moving slice (a 7-365 day
+  // aggregate read from the local store, keyed on window not stationId) --
+  // it has its own trigger (the window pref changing), not the 30s poll or
+  // loadData's stationId-keyed refresh, so it gets its own controller and
+  // effect rather than sharing abortRef/loadData.
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    (async () => {
+      try {
+        const result = await fetchRecordsSummary(recordsWindowDays, signal);
+        if (signal.aborted) return;
+        setSummary(result);
+      } catch {
+        // Stale-retain (matches applySettled's philosophy for the other
+        // best-effort slices): on abort or a transient failure, keep
+        // whatever summary is already in state rather than clobbering it.
+      }
+    })();
+
+    return () => controller.abort();
+  }, [recordsWindowDays]);
+
   return {
     station,
     current,
     forecast,
     status,
     almanac,
+    summary,
     isLoading,
     error,
     lastUpdated,

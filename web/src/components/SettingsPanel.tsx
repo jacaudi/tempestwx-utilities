@@ -139,6 +139,22 @@ export function SettingsPanel({ isOpen, prefs, onPrefsChange, onClose }: Setting
         </div>
 
         <div className="settings-section">
+          <h3>Records</h3>
+          <div className="setting-row">
+            <label>Window</label>
+            <div className="toggle-group">
+              {([7, 30, 180, 365] as const).map((d) => (
+                <button
+                  key={d}
+                  className={prefs.recordsWindowDays === d ? 'active' : ''}
+                  onClick={() => onPrefsChange({ recordsWindowDays: d })}
+                >{d} days</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="settings-section">
           <h3>Theme</h3>
           <div className="theme-grid">
             {themeList.map((t) => (

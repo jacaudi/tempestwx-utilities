@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"math"
@@ -28,6 +29,11 @@ type fakeObservationReader struct {
 	// -- simulating the real writer's allowlist rejecting an unknown field
 	// before running any query.
 	historyErr error
+
+	// summary and summaryErr back SummarizeObservations for
+	// TestHandleSummary_*.
+	summary    sqlite.Summary
+	summaryErr error
 }
 
 func (f *fakeObservationReader) LatestObservationAny(context.Context) (sqlite.Observation, error) {
@@ -39,6 +45,10 @@ func (f *fakeObservationReader) HistoryPoints(_ context.Context, field string, _
 		return nil, f.historyErr
 	}
 	return f.history[field], nil
+}
+
+func (f *fakeObservationReader) SummarizeObservations(context.Context, int64, int64) (sqlite.Summary, error) {
+	return f.summary, f.summaryErr
 }
 
 func testDepsWithObservations(reader ObservationReader) Deps {
@@ -297,3 +307,82 @@ func TestAPI_ObservationsNilStore(t *testing.T) {
 // the handler must map ANY HistoryPoints error to 400, not just a specific
 // sentinel, since HistoryPoints has no exported sentinel for this case.
 var errUnknownFieldForTest = errors.New("unknown history field")
+
+// TestHandleSummary_OK proves GET /api/observations/summary?days=N maps a
+// valid allowlisted window to 200 with the summaryResponse shape (Contract C
+// -- web/src/types/weather.ts RecordsSummary, Task 4), including the
+// window echo and a spot-check of the NULL-able fields when they are valid.
+func TestHandleSummary_OK(t *testing.T) {
+	reader := &fakeObservationReader{summary: sqlite.Summary{
+		Count:          5,
+		CoveredFrom:    sql.NullInt64{Int64: 10, Valid: true},
+		CoveredTo:      sql.NullInt64{Int64: 90, Valid: true},
+		TempMax:        sql.NullFloat64{Float64: 25, Valid: true},
+		TempMin:        sql.NullFloat64{Float64: 5, Valid: true},
+		WindMax:        sql.NullFloat64{Float64: 8, Valid: true},
+		GustMax:        sql.NullFloat64{Float64: 12, Valid: true},
+		RainTotal:      sql.NullFloat64{Float64: 3.5, Valid: true},
+		LightningTotal: sql.NullInt64{Int64: 4, Valid: true},
+	}}
+
+	srv := New(testDepsWithObservations(reader))
+	req := httptest.NewRequest(http.MethodGet, "/api/observations/summary?days=7", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/observations/summary?days=7 = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var got summaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v (body: %s)", err, rec.Body.String())
+	}
+	if got.Window.Days != 7 || got.Count != 5 || *got.Temperature.Max != 25 || *got.RainTotal != 3.5 || *got.LightningTotal != 4 {
+		t.Fatalf("bad body: %+v", got)
+	}
+}
+
+// TestHandleSummary_BadDays proves every non-allowlisted days value --
+// missing, non-numeric, or a number outside {7,30,180,365} -- 400s. This is
+// deliberately stricter than /history's from/to (which default rather than
+// reject), because a window that isn't one of the four the UI offers has no
+// sensible fallback.
+func TestHandleSummary_BadDays(t *testing.T) {
+	for _, q := range []string{"", "?days=1", "?days=abc", "?days=8"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/observations/summary"+q, nil)
+		rec := httptest.NewRecorder()
+		New(testDepsWithObservations(&fakeObservationReader{})).Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET /api/observations/summary%s = %d, want 400", q, rec.Code)
+		}
+	}
+}
+
+// TestHandleSummary_ReaderError proves GET /api/observations/summary 500s
+// (with the ErrorContext log path exercised) when SummarizeObservations
+// returns an error, e.g. a query timeout or a sqlite failure -- the one
+// branch of handleSummary's error handling left uncovered.
+func TestHandleSummary_ReaderError(t *testing.T) {
+	reader := &fakeObservationReader{summaryErr: errors.New("boom")}
+	req := httptest.NewRequest(http.MethodGet, "/api/observations/summary?days=7", nil)
+	rec := httptest.NewRecorder()
+	New(testDepsWithObservations(reader)).Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /api/observations/summary?days=7 = %d, want 500", rec.Code)
+	}
+}
+
+// TestHandleSummary_NilReader proves the summary handler 503s (not panics)
+// when Deps.Observations is nil, matching the other two observation
+// handlers' nil-guard pattern (see TestAPI_ObservationsNilStore).
+func TestHandleSummary_NilReader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/observations/summary?days=7", nil)
+	rec := httptest.NewRecorder()
+	New(testDepsWithObservations(nil)).Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /api/observations/summary?days=7 = %d, want 503", rec.Code)
+	}
+}

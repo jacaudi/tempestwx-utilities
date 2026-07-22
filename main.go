@@ -202,6 +202,12 @@ func main() {
 	// same deferred cleanup, after metricsSink.Close returns, rather than via
 	// its own defer (which LIFO ordering would run BEFORE the sink drains).
 	var sqliteDB *sql.DB
+	// sqliteRDB is the dedicated read-only handle (UDP mode only, when the
+	// sqlite store is selected), opened after sqliteDB and passed to the
+	// writer via sqlite.WithReadDB so query-side reads run concurrently with
+	// the single ingest writer (WAL) instead of queuing behind it. Closed
+	// alongside sqliteDB in the deferred cleanup below, after the sink drains.
+	var sqliteRDB *sql.DB
 	// sw is the *sqlite.Writer handle (UDP mode only, when the sqlite store is
 	// selected), captured here so it can also be wired into httpserver.Deps.Observations
 	// below -- the same writer instance both drains the metrics sink and backs
@@ -227,6 +233,11 @@ func main() {
 		}
 		if err := metricsSink.Close(cleanupCtx); err != nil {
 			slog.Error("sink close", "err", err)
+		}
+		if sqliteRDB != nil {
+			if err := sqliteRDB.Close(); err != nil {
+				slog.Error("sqlite read db close", "err", err)
+			}
 		}
 		if sqliteDB != nil {
 			if err := sqliteDB.Close(); err != nil {
@@ -298,7 +309,12 @@ func main() {
 				log.Fatalf("failed to open sqlite: %v", err)
 			}
 			sqliteDB = db
-			sw = sqlite.NewWriter(ctx, db, sqliteCfg)
+			rdb, err := sqlite.OpenReadOnly(ctx, choice.sqlitePath, sqliteCfg)
+			if err != nil {
+				log.Fatalf("failed to open sqlite read handle: %v", err)
+			}
+			sqliteRDB = rdb
+			sw = sqlite.NewWriter(ctx, db, sqliteCfg, sqlite.WithReadDB(rdb))
 			metricsSink.AddWriter(sw)
 		}
 	}
