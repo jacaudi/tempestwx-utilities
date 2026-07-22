@@ -37,8 +37,9 @@ describe('RecordsCard', () => {
     expect(screen.getByText('Gust')).toBeInTheDocument();
     // 30C -> 86F (formatTemp rounds and appends unit)
     expect(screen.getByText('86°F')).toBeInTheDocument();
-    // Lightning is a raw integer count, no formatter
+    // Lightning is a raw integer count with a "strikes" unit label
     expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('strikes')).toBeInTheDocument();
   });
 
   it('renders em-dashes when count is 0, even if aggregates are non-null', () => {
@@ -66,6 +67,8 @@ describe('RecordsCard', () => {
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(6);
     // humidity/pressure were left non-null, so they should still render
     expect(screen.getByText('90%')).toBeInTheDocument();
+    // a null lightning count shows an em-dash, not "— strikes"
+    expect(screen.queryByText('strikes')).not.toBeInTheDocument();
   });
 
   it('renders a safe placeholder when summary is null, without crashing', () => {

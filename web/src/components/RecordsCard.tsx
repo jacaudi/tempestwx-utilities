@@ -107,7 +107,10 @@ function RecordsCardImpl({ summary, prefs }: RecordsCardProps) {
         <div className="rstat">
           <span className="rstat-label">Lightning</span>
           <div className="rstat-body">
-            <span className="rstat-value">{fmt(lightningTotal, (v) => `${v}`)}</span>
+            <span className="rstat-value">
+              {fmt(lightningTotal, (v) => `${v}`)}
+              {lightningTotal !== null && <span className="rstat-unit">strikes</span>}
+            </span>
           </div>
         </div>
       </div>
