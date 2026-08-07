@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.3](https://github.com/jacaudi/tempestwx-utilities/compare/v3.1.2...v3.1.3) (2026-08-07)
+
+
+### Miscellaneous Chores
+
+* **deps:** Update grafana/grafana Docker tag to v13 ([2e19f69](https://github.com/jacaudi/tempestwx-utilities/commit/2e19f693b713c3d62e71396ef0d0350e7a4a9fc5))
+* **deps:** Update python Docker tag to v3.14 ([b3f901a](https://github.com/jacaudi/tempestwx-utilities/commit/b3f901ab91941c8a6af6896cd404decdc3cc9b0c))
+
 ## [3.1.2](https://github.com/jacaudi/tempestwx-utilities/compare/v3.1.1...v3.1.2) (2026-08-07)
 
 
